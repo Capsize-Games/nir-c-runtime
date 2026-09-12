@@ -1,5 +1,10 @@
 # nir-c-runtime
 
+[![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0-orange.svg)](#status)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
+[![C Standard: C11](https://img.shields.io/badge/C-C11-00599C.svg)](CMakeLists.txt)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Capsize-Games/nir-c-runtime/pulls)
+
 A minimal C runtime for executing [NIR](https://github.com/neuromorphs/NIR)
 (Neuromorphic Intermediate Representation) graphs — specifically, graphs
 exported by [spikeforge](https://github.com/capsize-games/spikeforge) — on
@@ -82,6 +87,15 @@ cd build && ctest --output-on-failure
 with `tools/export_fixture.py` (requires spikeforge on the Python path,
 e.g. a lunar-snn-style venv with `spikeforge[nir]` installed) if the
 reference interpreter's semantics ever change.
+
+## Citing
+
+If nir-c-runtime is useful in your research or deployment, please cite it —
+see [CITATION.cff](CITATION.cff) (GitHub renders a "Cite this repository"
+button from it automatically). To cite the spikeforge toolkit that trains
+and exports the models this runtime executes, see
+[spikeforge's own CITATION.cff](https://github.com/capsize-games/spikeforge/blob/main/CITATION.cff)
+instead.
 
 ## License
 
