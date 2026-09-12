@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: >-
+  If you use nir-c-runtime in your research or deployment, please cite it
+  using the metadata below. To cite the spikeforge toolkit that trains and
+  exports the models this runtime executes, see spikeforge's own
+  CITATION.cff instead.
+title: nir-c-runtime
+abstract: >-
+  A minimal, dependency-light C11 runtime for executing NIR (Neuromorphic
+  Intermediate Representation) graphs exported by spikeforge on embedded
+  and edge targets where a Python/PyTorch runtime isn't an option. Loads a
+  NIR JSON graph export and its weights and runs inference for spikeforge's
+  conv_net topology node kinds.
+type: software
+authors:
+  - name: "Capsize Games"
+    email: contact@capsizegames.com
+repository-code: "https://github.com/capsize-games/nir-c-runtime"
+license: BSD-3-Clause
+keywords:
+  - spiking neural networks
+  - neuromorphic computing
+  - NIR
+  - embedded systems
+  - edge inference
+  - C11
