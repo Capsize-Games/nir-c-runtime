@@ -13,7 +13,7 @@ abstract: >-
   conv_net topology node kinds.
 type: software
 authors:
-  - name: "Capsize Games"
+  - name: "Capsize LLC"
     email: contact@capsizegames.com
 repository-code: "https://github.com/capsize-games/nir-c-runtime"
 license: BSD-3-Clause
