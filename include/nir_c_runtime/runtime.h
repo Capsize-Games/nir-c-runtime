@@ -24,6 +24,22 @@ typedef struct {
     int *delay_primed;
 } nir_runtime_t;
 
+/* Caller-owned buffers for allocation-free graph execution. Every tensor
+ * entry must be bound with `nir_tensor_bind` before the first run; entries
+ * need capacity for the largest tensor that node can produce. The arrays and
+ * flag buffers must each contain at least `runtime->graph->node_count`
+ * entries. `sum` and `total` are scratch/output tensors. */
+typedef struct {
+    nir_tensor_t *values;
+    nir_tensor_t *li_state;
+    int *li_primed;
+    nir_tensor_t *delay_buffer;
+    int *delay_primed;
+    nir_tensor_t *sum;
+    nir_tensor_t *total;
+    size_t node_capacity;
+} nir_runtime_workspace_t;
+
 /* Compute the graph's execution order and allocate per-node state.
  * `graph` must outlive `rt`. Returns 0 and sets *error on a graph the
  * runtime can't schedule (a cycle no Delay node breaks). */
@@ -43,5 +59,20 @@ int nir_runtime_run(
     nir_tensor_t *readout_out,
     char **error
 );
+
+/* Run using only caller-owned workspace storage after setup. `readout_out`
+ * must be bound before the call. No allocation or deallocation occurs on the
+ * successful path, and runtime state is retained across calls. */
+int nir_runtime_run_workspace(
+    nir_runtime_t *rt,
+    const nir_tensor_t *frames,
+    size_t num_steps,
+    nir_runtime_workspace_t *workspace,
+    nir_tensor_t *readout_out,
+    char **error
+);
+
+/* Clear temporal flags in a workspace without releasing its buffers. */
+void nir_runtime_workspace_reset(nir_runtime_workspace_t *workspace);
 
 #endif /* NIR_C_RUNTIME_RUNTIME_H */
