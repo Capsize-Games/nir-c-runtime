@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 
+#define NIR_CONV_OUTPUT_TILE 4u
+
 static size_t conv_out_dim(
     size_t in, int padding, int dilation, int kernel, int stride
 ) {
@@ -56,32 +58,41 @@ int nir_op_conv2d_into(
 
     for (size_t oc = 0; oc < params->out_channels; oc++) {
         float bias = params->bias != NULL ? params->bias[oc] : 0.0f;
-        for (size_t oh = 0; oh < out_h; oh++) {
-            for (size_t ow = 0; ow < out_w; ow++) {
-                float sum = bias;
-                for (size_t ic = 0; ic < params->in_channels; ic++) {
-                    for (size_t kh = 0; kh < params->kernel_h; kh++) {
-                        long ih = (long)(oh * params->stride_h)
-                            - params->padding_h
-                            + (long)kh * params->dilation_h;
-                        if (ih < 0 || (size_t)ih >= in_h) continue;
-                        for (size_t kw = 0; kw < params->kernel_w; kw++) {
-                            long iw = (long)(ow * params->stride_w)
-                                - params->padding_w
-                                + (long)kw * params->dilation_w;
-                            if (iw < 0 || (size_t)iw >= in_w) continue;
-                            size_t in_index = (ic * in_h + (size_t)ih)
-                                * in_w + (size_t)iw;
-                            size_t w_index =
-                                ((oc * params->in_channels + ic)
-                                    * params->kernel_h + kh)
-                                * params->kernel_w + kw;
-                            sum += input->data[in_index]
-                                * params->weight[w_index];
+        for (size_t oh0 = 0; oh0 < out_h; oh0 += NIR_CONV_OUTPUT_TILE) {
+            size_t oh_end = oh0 + NIR_CONV_OUTPUT_TILE;
+            if (oh_end > out_h) oh_end = out_h;
+            for (size_t ow0 = 0; ow0 < out_w;
+                 ow0 += NIR_CONV_OUTPUT_TILE) {
+                size_t ow_end = ow0 + NIR_CONV_OUTPUT_TILE;
+                if (ow_end > out_w) ow_end = out_w;
+                for (size_t oh = oh0; oh < oh_end; oh++) {
+                    for (size_t ow = ow0; ow < ow_end; ow++) {
+                        float sum = bias;
+                        for (size_t ic = 0; ic < params->in_channels; ic++) {
+                            for (size_t kh = 0; kh < params->kernel_h; kh++) {
+                                long ih = (long)(oh * params->stride_h)
+                                    - params->padding_h
+                                    + (long)kh * params->dilation_h;
+                                if (ih < 0 || (size_t)ih >= in_h) continue;
+                                for (size_t kw = 0; kw < params->kernel_w; kw++) {
+                                    long iw = (long)(ow * params->stride_w)
+                                        - params->padding_w
+                                        + (long)kw * params->dilation_w;
+                                    if (iw < 0 || (size_t)iw >= in_w) continue;
+                                    size_t in_index = (ic * in_h + (size_t)ih)
+                                        * in_w + (size_t)iw;
+                                    size_t w_index =
+                                        ((oc * params->in_channels + ic)
+                                            * params->kernel_h + kh)
+                                        * params->kernel_w + kw;
+                                    sum += input->data[in_index]
+                                        * params->weight[w_index];
+                                }
+                            }
                         }
+                        output->data[(oc * out_h + oh) * out_w + ow] = sum;
                     }
                 }
-                output->data[(oc * out_h + oh) * out_w + ow] = sum;
             }
         }
     }
