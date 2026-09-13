@@ -41,7 +41,7 @@ topology against spikeforge's own reference `NirInterpreter` output
 (`tools/export_fixture.py` produces both from one run). It was also checked
 by hand against a real trained 128×128, 2-channel, 11-class `conv_net`
 checkpoint (not committed here) — **bit-exact match** with the Python
-reference interpreter (max abs diff `0.0`). All three test executables also
+reference interpreter (max abs diff `0.0`). All four test executables also
 pass clean under AddressSanitizer + UBSan.
 
 **Known limitation:** the convolution/pooling implementation is naive
@@ -66,13 +66,17 @@ build" anyway. Worth optimizing before any latency claim ships.
       is fine for validation but not yet appropriate for a hard-realtime
       or freestanding embedded target.
 - [ ] Vectorized/blocked conv2d (see the timing note above).
+- [x] Allocation-free fixed-point event-module ABI for bounded, single-output
+      temporal detectors (`fixed_event.h`), deterministic guard-state/action
+      helpers, and an 8,192-row exhaustive C/Curlee truth-table fingerprint.
 
 ## Out of scope (for now)
 
 - Training. This is inference-only.
-- Any Curlee/JOE integration — tracked separately as a possible future
-  target once [curlee#305](https://github.com/w4ffl35/curlee/issues/305)
-  and [curlee#306](https://github.com/w4ffl35/curlee/issues/306) land.
+- General Curlee/JOE graph execution. The narrow, allocation-free event ABI is
+  integrated as the reference path for
+  [curlee#316](https://github.com/w4ffl35/curlee/issues/316); loading arbitrary
+  NIR graphs into JOE remains future work.
 - A specific hardware target. This targets portable C first; a specific
   MCU/board port is a later, separate scope once the core runtime exists.
 
