@@ -31,14 +31,14 @@ typedef enum {
 
 typedef struct {
     size_t out_channels, in_channels, kernel_h, kernel_w;
-    float *weight; /* [out_channels][in_channels][kernel_h][kernel_w] */
+    float *weight; /* dequantized [out][in][kernel_h][kernel_w] */
     float *bias;   /* [out_channels], NULL if the node has no bias */
     int stride_h, stride_w, padding_h, padding_w, dilation_h, dilation_w;
 } nir_conv2d_params_t;
 
 typedef struct {
     size_t out_features, in_features;
-    float *weight; /* [out_features][in_features] */
+    float *weight; /* dequantized [out_features][in_features] */
     float *bias;   /* [out_features], NULL if the node has no bias */
 } nir_affine_params_t;
 
@@ -87,8 +87,11 @@ typedef struct {
 
 /* Parse a graph_summary()-shaped JSON value (top-level {"nodes": [...],
  * "edges": [...]}, matching spikeforge.nir_bridge.exporter.graph_summary)
- * into `out`. Returns 0 and sets *error to a malloc'd message
- * (caller-owned) on failure, including an unsupported node kind. */
+ * into `out`. Weight and bias arrays may be raw float arrays or SpikeForge's
+ * per-tensor int8/uint8 envelope (`data`, `dtype`, `scale`, `zero_point`);
+ * quantized values are dequantized into the runtime's float representation.
+ * Returns 0 and sets *error to a malloc'd message (caller-owned) on failure,
+ * including an unsupported node kind. */
 int nir_graph_load(
     const json_value_t *summary, nir_graph_t *out, char **error
 );
