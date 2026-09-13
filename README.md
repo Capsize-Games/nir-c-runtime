@@ -44,13 +44,13 @@ checkpoint (not committed here) — **bit-exact match** with the Python
 reference interpreter (max abs diff `0.0`). All four test executables also
 pass clean under AddressSanitizer + UBSan.
 
-**Known limitation:** the convolution/pooling implementation is naive
-nested loops, not vectorized or blocked. On the 128×128 real-model check
-above it took ~148ms for 16 timesteps versus PyTorch's ~20ms on the same
-machine — expected for a correctness-first MVP, not yet tuned, and the
-real target hardware for this runtime (an MCU with no PyTorch alternative
-at all) makes a different comparison than "faster than a desktop GPU
-build" anyway. Worth optimizing before any latency claim ships.
+**Known limitation:** convolution uses portable 4×4 output tiles but is not
+yet SIMD-vectorized. On the 128×128 real-model check above it took ~148ms for
+16 timesteps versus PyTorch's ~20ms on the same machine — expected for a
+correctness-first MVP, not yet tuned, and the real target hardware for this
+runtime (an MCU with no PyTorch alternative at all) makes a different
+comparison than "faster than a desktop GPU build" anyway. SIMD and
+target-specific kernels remain future optimization work.
 
 ## Scope
 
@@ -68,7 +68,8 @@ build" anyway. Worth optimizing before any latency claim ships.
 - [x] Caller-owned workspace execution for fixed-shape graph inference via
       `nir_runtime_run_workspace`; the legacy convenience API above remains
       allocation-based.
-- [ ] Vectorized/blocked conv2d (see the timing note above).
+- [x] Blocked conv2d with portable 4×4 output tiles (see the timing note
+      above); SIMD kernels remain target-specific future work.
 - [x] Allocation-free fixed-point event-module ABI for bounded, single-output
       temporal detectors (`fixed_event.h`), deterministic guard-state/action
       helpers, and an 8,192-row exhaustive C/Curlee truth-table fingerprint.
