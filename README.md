@@ -1,6 +1,7 @@
 # nir-c-runtime
 
 [![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0-orange.svg)](#status)
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://capsizegames.com/discord)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
 [![C Standard: C11](https://img.shields.io/badge/C-C11-00599C.svg)](CMakeLists.txt)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Capsize-Games/nir-c-runtime/pulls)
