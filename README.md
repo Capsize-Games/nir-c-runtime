@@ -65,6 +65,9 @@ build" anyway. Worth optimizing before any latency claim ships.
       allocates a fresh tensor per node per step via malloc/calloc, which
       is fine for validation but not yet appropriate for a hard-realtime
       or freestanding embedded target.
+- [x] Caller-owned workspace execution for fixed-shape graph inference via
+      `nir_runtime_run_workspace`; the legacy convenience API above remains
+      allocation-based.
 - [ ] Vectorized/blocked conv2d (see the timing note above).
 - [x] Allocation-free fixed-point event-module ABI for bounded, single-output
       temporal detectors (`fixed_event.h`), deterministic guard-state/action

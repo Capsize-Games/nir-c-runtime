@@ -252,6 +252,186 @@ static int run_step(
     return 1;
 }
 
+static int workspace_ready(
+    const nir_runtime_t *rt, const nir_runtime_workspace_t *workspace,
+    const nir_tensor_t *readout_out, char **error
+) {
+    size_t n = rt->graph->node_count;
+    if (workspace == NULL || workspace->node_capacity < n ||
+        workspace->values == NULL || workspace->li_state == NULL ||
+        workspace->li_primed == NULL || workspace->delay_buffer == NULL ||
+        workspace->delay_primed == NULL || workspace->sum == NULL ||
+        workspace->total == NULL || readout_out == NULL ||
+        workspace->sum->data == NULL || workspace->total->data == NULL ||
+        readout_out->data == NULL) {
+        set_error(error, "incomplete runtime workspace", NULL);
+        return 0;
+    }
+    return 1;
+}
+
+static int set_zero_scalar(nir_tensor_t *tensor) {
+    size_t shape[1] = {1};
+    if (tensor->data == NULL || tensor->capacity < 1) {
+        return 0;
+    }
+    tensor->ndim = 1;
+    tensor->shape[0] = shape[0];
+    tensor->shape[1] = 0;
+    tensor->shape[2] = 0;
+    tensor->size = 1;
+    tensor->data[0] = 0.0f;
+    return 1;
+}
+
+static int sum_incoming_workspace(
+    nir_runtime_t *rt, nir_runtime_workspace_t *workspace,
+    size_t target_index, char **error
+) {
+    const nir_graph_t *graph = rt->graph;
+    nir_tensor_t *sum = workspace->sum;
+    int have_any = 0, found_edge = 0;
+    for (size_t e = 0; e < graph->edge_count; e++) {
+        if (graph->edges[e].target_index != target_index) {
+            continue;
+        }
+        found_edge = 1;
+        size_t source = graph->edges[e].source_index;
+        if (graph->nodes[source].kind == NIR_NODE_DELAY &&
+            !workspace->delay_primed[source]) {
+            continue;
+        }
+        if (!have_any) {
+            if (!nir_tensor_copy_into(sum, &workspace->values[source])) {
+                set_error(error, "workspace tensor is too small", NULL);
+                return 0;
+            }
+            have_any = 1;
+        } else if (!nir_tensor_add_inplace(
+                       sum, &workspace->values[source])) {
+            set_error(error, "shape mismatch summing node inputs", NULL);
+            return 0;
+        }
+    }
+    if (!found_edge) {
+        set_error(
+            error, "node %s received no inputs", graph->nodes[target_index].name
+        );
+        return 0;
+    }
+    if (!have_any && !set_zero_scalar(sum)) {
+        set_error(error, "workspace tensor is too small", NULL);
+        return 0;
+    }
+    return 1;
+}
+
+static int apply_node_workspace(
+    const nir_node_t *node, const nir_tensor_t *input,
+    nir_runtime_workspace_t *workspace, size_t index, char **error
+) {
+    nir_tensor_t *output = &workspace->values[index];
+    int ok = 0;
+    switch (node->kind) {
+        case NIR_NODE_CONV2D:
+            ok = nir_op_conv2d_into(&node->params.conv2d, input, output);
+            break;
+        case NIR_NODE_AFFINE:
+            ok = nir_op_affine_into(&node->params.affine, input, output);
+            break;
+        case NIR_NODE_FLATTEN:
+            ok = nir_op_flatten_into(input, output);
+            break;
+        case NIR_NODE_AVGPOOL2D:
+            ok = nir_op_avgpool2d_into(&node->params.pool2d, input, output);
+            break;
+        case NIR_NODE_SUMPOOL2D:
+            ok = nir_op_sumpool2d_into(&node->params.pool2d, input, output);
+            break;
+        case NIR_NODE_LI:
+            ok = nir_op_li_into(
+                &node->params.li, input,
+                workspace->li_primed[index] ?
+                    &workspace->li_state[index] : NULL,
+                output
+            );
+            if (ok && !nir_tensor_copy_into(
+                    &workspace->li_state[index], output)) {
+                ok = 0;
+            }
+            if (ok) {
+                workspace->li_primed[index] = 1;
+            }
+            break;
+        case NIR_NODE_THRESHOLD:
+            ok = nir_op_threshold_into(
+                &node->params.threshold, input, output
+            );
+            break;
+        case NIR_NODE_SCALE:
+            ok = nir_op_scale_into(&node->params.scale, input, output);
+            break;
+        case NIR_NODE_OUTPUT:
+            ok = nir_tensor_copy_into(output, input);
+            break;
+        default:
+            break;
+    }
+    if (!ok) {
+        set_error(error, "workspace tensor is too small or invalid", NULL);
+    }
+    return ok;
+}
+
+static int run_step_workspace(
+    nir_runtime_t *rt, const nir_tensor_t *frame,
+    nir_runtime_workspace_t *workspace, char **error
+) {
+    const nir_graph_t *graph = rt->graph;
+    if (!nir_tensor_copy_into(
+            &workspace->values[graph->input_index], frame)) {
+        set_error(error, "workspace input tensor is too small", NULL);
+        return 0;
+    }
+    for (size_t i = 0; i < graph->node_count; i++) {
+        if (graph->nodes[i].kind == NIR_NODE_DELAY &&
+            workspace->delay_primed[i] &&
+            !nir_tensor_copy_into(
+                &workspace->values[i], &workspace->delay_buffer[i])) {
+            set_error(error, "workspace delay tensor is too small", NULL);
+            return 0;
+        }
+    }
+    for (size_t o = 0; o < graph->node_count; o++) {
+        size_t index = rt->order[o];
+        nir_node_kind_t kind = graph->nodes[index].kind;
+        if (kind == NIR_NODE_INPUT || kind == NIR_NODE_DELAY) {
+            continue;
+        }
+        if (!sum_incoming_workspace(rt, workspace, index, error) ||
+            !apply_node_workspace(
+                &graph->nodes[index], workspace->sum, workspace, index,
+                error
+            )) {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < graph->node_count; i++) {
+        if (graph->nodes[i].kind != NIR_NODE_DELAY) {
+            continue;
+        }
+        if (!sum_incoming_workspace(rt, workspace, i, error) ||
+            !nir_tensor_copy_into(
+                &workspace->delay_buffer[i], workspace->sum
+            )) {
+            set_error(error, "workspace delay tensor is too small", NULL);
+            return 0;
+        }
+        workspace->delay_primed[i] = 1;
+    }
+    return 1;
+}
+
 int nir_runtime_run(
     nir_runtime_t *rt,
     const nir_tensor_t *frames,
@@ -297,5 +477,59 @@ int nir_runtime_run(
         total.data[i] /= (float)num_steps;
     }
     *readout_out = total;
+    return 1;
+}
+
+void nir_runtime_workspace_reset(nir_runtime_workspace_t *workspace) {
+    if (workspace == NULL || workspace->li_primed == NULL ||
+        workspace->delay_primed == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < workspace->node_capacity; i++) {
+        workspace->li_primed[i] = 0;
+        workspace->delay_primed[i] = 0;
+    }
+}
+
+int nir_runtime_run_workspace(
+    nir_runtime_t *rt,
+    const nir_tensor_t *frames,
+    size_t num_steps,
+    nir_runtime_workspace_t *workspace,
+    nir_tensor_t *readout_out,
+    char **error
+) {
+    if (rt == NULL || rt->graph == NULL || frames == NULL ||
+        num_steps == 0 || !workspace_ready(rt, workspace, readout_out, error)) {
+        if (num_steps == 0) {
+            set_error(error, "no steps to run", NULL);
+        }
+        return 0;
+    }
+    int have_total = 0;
+    for (size_t t = 0; t < num_steps; t++) {
+        if (!run_step_workspace(rt, &frames[t], workspace, error)) {
+            return 0;
+        }
+        const nir_tensor_t *output =
+            &workspace->values[rt->graph->output_index];
+        if (!have_total) {
+            if (!nir_tensor_copy_into(workspace->total, output)) {
+                set_error(error, "workspace total tensor is too small", NULL);
+                return 0;
+            }
+            have_total = 1;
+        } else if (!nir_tensor_add_inplace(workspace->total, output)) {
+            set_error(error, "workspace output shape changed", NULL);
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < workspace->total->size; i++) {
+        workspace->total->data[i] /= (float)num_steps;
+    }
+    if (!nir_tensor_copy_into(readout_out, workspace->total)) {
+        set_error(error, "workspace readout tensor is too small", NULL);
+        return 0;
+    }
     return 1;
 }
