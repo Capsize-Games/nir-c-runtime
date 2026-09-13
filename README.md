@@ -58,8 +58,8 @@ build" anyway. Worth optimizing before any latency claim ships.
 - [x] Load full-precision (float32) weights from the export.
 - [x] Run a fixed-timestep forward pass, validated against spikeforge's own
       reference NIR interpreter.
-- [ ] Load int8/uint8-quantized weights (matching spikeforge_targets'
-      declared quantization schemes) — not yet started.
+- [x] Load int8/uint8-quantized weights (matching spikeforge_targets'
+      declared quantization schemes); values are dequantized at graph load.
 - [ ] No dynamic allocation after initialization / freestanding-C11
       compatibility for a real MCU target — the current implementation
       allocates a fresh tensor per node per step via malloc/calloc, which

@@ -1,6 +1,7 @@
 #include "nir_c_runtime/graph.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,36 +25,84 @@ static char *dup_string(const char *text) {
     return copy;
 }
 
-/* Flatten a 1D JSON number array into a newly malloc'd float buffer. */
+typedef struct {
+    const json_value_t *data;
+    double scale;
+    double zero_point;
+} weight_view_t;
+
+static int weight_view(const json_value_t *value, weight_view_t *view) {
+    view->data = value;
+    view->scale = 1.0;
+    view->zero_point = 0.0;
+    if (value == NULL || value->type == JSON_ARRAY) {
+        return value != NULL;
+    }
+    if (value->type != JSON_OBJECT) {
+        return 0;
+    }
+    const json_value_t *data = json_object_get(value, "data");
+    const json_value_t *dtype = json_object_get(value, "dtype");
+    const json_value_t *scale = json_object_get(value, "scale");
+    const json_value_t *zero = json_object_get(value, "zero_point");
+    const char *dtype_name = json_as_string(dtype);
+    if (data == NULL || data->type != JSON_ARRAY || dtype_name == NULL ||
+        (strcmp(dtype_name, "int8") != 0 &&
+         strcmp(dtype_name, "uint8") != 0) ||
+        scale == NULL || scale->type != JSON_NUMBER ||
+        zero == NULL || zero->type != JSON_NUMBER) {
+        return 0;
+    }
+    view->data = data;
+    view->scale = json_as_number(scale, 0.0);
+    view->zero_point = json_as_number(zero, 0.0);
+    return isfinite(view->scale) && view->scale > 0.0 &&
+           isfinite(view->zero_point);
+}
+
+static float decode_weight(
+    const weight_view_t *view, const json_value_t *value
+) {
+    return (float)((json_as_number(value, 0.0) - view->zero_point) *
+                   view->scale);
+}
+
+/* Flatten a raw or quantized 1D JSON array into a float buffer. */
 static float *parse_floats_1d(const json_value_t *array, size_t *count) {
-    size_t n = json_array_length(array);
+    weight_view_t view;
+    if (!weight_view(array, &view)) {
+        return NULL;
+    }
+    size_t n = json_array_length(view.data);
     float *out = (float *)malloc((n == 0 ? 1 : n) * sizeof(float));
     if (out == NULL) {
         return NULL;
     }
     for (size_t i = 0; i < n; i++) {
-        out[i] = (float)json_as_number(json_array_get(array, i), 0.0);
+        out[i] = decode_weight(&view, json_array_get(view.data, i));
     }
     *count = n;
     return out;
 }
 
-/* Flatten a 2D JSON number array ([rows][cols]) row-major. */
+/* Flatten a raw or quantized 2D JSON array row-major. */
 static float *parse_floats_2d(
     const json_value_t *array, size_t *rows, size_t *cols
 ) {
-    size_t r = json_array_length(array);
-    size_t c = r > 0 ? json_array_length(json_array_get(array, 0)) : 0;
+    weight_view_t view;
+    if (!weight_view(array, &view)) {
+        return NULL;
+    }
+    size_t r = json_array_length(view.data);
+    size_t c = r > 0 ? json_array_length(json_array_get(view.data, 0)) : 0;
     float *out = (float *)malloc((r * c == 0 ? 1 : r * c) * sizeof(float));
     if (out == NULL) {
         return NULL;
     }
     for (size_t i = 0; i < r; i++) {
-        const json_value_t *row = json_array_get(array, i);
+        const json_value_t *row = json_array_get(view.data, i);
         for (size_t j = 0; j < c; j++) {
-            out[i * c + j] = (float)json_as_number(
-                json_array_get(row, j), 0.0
-            );
+            out[i * c + j] = decode_weight(&view, json_array_get(row, j));
         }
     }
     *rows = r;
@@ -61,13 +110,16 @@ static float *parse_floats_2d(
     return out;
 }
 
-/* Flatten a 4D JSON number array ([a][b][c][d]) row-major, the layout
- * a Conv2d weight tensor ([out_ch][in_ch][kh][kw]) needs. */
+/* Flatten a raw or quantized 4D array row-major for Conv2d weights. */
 static float *parse_floats_4d(
     const json_value_t *array, size_t *d0, size_t *d1, size_t *d2, size_t *d3
 ) {
-    size_t a = json_array_length(array);
-    const json_value_t *l1 = a > 0 ? json_array_get(array, 0) : NULL;
+    weight_view_t view;
+    if (!weight_view(array, &view)) {
+        return NULL;
+    }
+    size_t a = json_array_length(view.data);
+    const json_value_t *l1 = a > 0 ? json_array_get(view.data, 0) : NULL;
     size_t b = json_array_length(l1);
     const json_value_t *l2 = b > 0 ? json_array_get(l1, 0) : NULL;
     size_t c = json_array_length(l2);
@@ -80,14 +132,14 @@ static float *parse_floats_4d(
     }
     size_t index = 0;
     for (size_t i = 0; i < a; i++) {
-        const json_value_t *dim1 = json_array_get(array, i);
+        const json_value_t *dim1 = json_array_get(view.data, i);
         for (size_t j = 0; j < b; j++) {
             const json_value_t *dim2 = json_array_get(dim1, j);
             for (size_t k = 0; k < c; k++) {
                 const json_value_t *dim3 = json_array_get(dim2, k);
                 for (size_t l = 0; l < d; l++) {
-                    out[index++] = (float)json_as_number(
-                        json_array_get(dim3, l), 0.0
+                    out[index++] = decode_weight(
+                        &view, json_array_get(dim3, l)
                     );
                 }
             }
