@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, nir-c-runtime-ci]
     steps:
       - uses: actions/checkout@v4
       - name: Configure
@@ -19,7 +19,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   sanitizers:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, nir-c-runtime-ci]
     steps:
       - uses: actions/checkout@v4
       - name: Configure with sanitizers
