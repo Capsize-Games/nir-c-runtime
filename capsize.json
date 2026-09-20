@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Capsize-Games/capsize-ci/1a50d06c20022f9bbc44bad002add302e1dae646/schema/capsize-1.json",
+  "schema_version": 1,
+  "standards": "1.x",
+  "name": "nir-c-runtime",
+  "type": "library",
+  "languages": ["c"],
+  "framework": null,
+  "databases": [],
+  "runtimes": {"cmake": "3.20", "c": "c11"},
+  "entrypoints": {
+    "library": "src/runtime.c",
+    "headers": "include/nir_c_runtime"
+  },
+  "task_runner": "just",
+  "commands": {
+    "setup": "setup",
+    "build": "build",
+    "test": "test",
+    "lint": "lint",
+    "format": "format",
+    "typecheck": "typecheck",
+    "run": "run",
+    "clean": "clean",
+    "docs": "docs",
+    "ci": "ci"
+  },
+  "dependencies": {
+    "cmake": "CMakeLists.txt"
+  },
+  "instructions": {
+    "canonical": "AGENTS.md",
+    "rules": ["capsize/base", "capsize/library", "capsize/lang/c"]
+  },
+  "owner": "Capsize-Games",
+  "license": "BSD-3-Clause"
+}
