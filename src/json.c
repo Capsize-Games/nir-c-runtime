@@ -71,6 +71,27 @@ static void append_utf8(char **buffer, size_t *len, size_t *cap,
     }
 }
 
+static int hex_digit(unsigned char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int parse_unicode_escape(parser_t *p, unsigned int *code_point) {
+    *code_point = 0;
+    for (size_t i = 0; i < 4; i++) {
+        p->cursor++;
+        int digit = hex_digit((unsigned char)*p->cursor);
+        if (digit < 0) {
+            set_error(p, "invalid Unicode escape");
+            return 0;
+        }
+        *code_point = (*code_point << 4) | (unsigned int)digit;
+    }
+    return 1;
+}
+
 static char *parse_raw_string(parser_t *p) {
     if (*p->cursor != '"') {
         set_error(p, "expected string");
@@ -98,9 +119,11 @@ static char *parse_raw_string(parser_t *p) {
                 case 't': append_char(&buffer, &len, &cap, '\t'); break;
                 case 'u': {
                     unsigned int code_point = 0;
-                    sscanf(p->cursor + 1, "%4x", &code_point);
+                    if (!parse_unicode_escape(p, &code_point)) {
+                        free(buffer);
+                        return NULL;
+                    }
                     append_utf8(&buffer, &len, &cap, code_point);
-                    p->cursor += 4;
                     break;
                 }
                 default:

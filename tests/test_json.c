@@ -46,9 +46,46 @@ static void test_malformed_input_is_rejected(void) {
     free(error);
 }
 
+static void check_invalid_unicode_escape(const char *text) {
+    /* Allocate exactly through the NUL so ASan catches cursor overruns. */
+    size_t length = strlen(text) + 1;
+    char *input = (char *)malloc(length);
+    CHECK(input != NULL);
+    memcpy(input, text, length);
+    char *error = NULL;
+    json_value_t *value = json_parse(input, &error);
+    CHECK(value == NULL);
+    CHECK(error != NULL);
+    free(error);
+    free(input);
+}
+
+static void test_invalid_unicode_escapes_are_rejected(void) {
+    const char *invalid[] = {
+        "\"\\u", "\"\\u0", "\"\\u00", "\"\\u004",
+        "\"\\u\"", "\"\\u0\"", "\"\\u00\"", "\"\\u004\"",
+        "\"\\ug000\"", "\"\\u0g00\"", "\"\\u00g0\"", "\"\\u000g\"",
+        "\"\\u+041\"", "\"\\u 041\""
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        check_invalid_unicode_escape(invalid[i]);
+    }
+}
+
+static void test_valid_bmp_unicode_escapes(void) {
+    char *error = NULL;
+    json_value_t *value = json_parse("\"\\u0041\\u00e9\\u20AC\"", &error);
+    CHECK(error == NULL);
+    CHECK(value != NULL);
+    CHECK(strcmp(json_as_string(value), "A\xC3\xA9\xE2\x82\xAC") == 0);
+    json_free(value);
+}
+
 int main(void) {
     test_scalars();
     test_array_and_object();
     test_malformed_input_is_rejected();
+    test_invalid_unicode_escapes_are_rejected();
+    test_valid_bmp_unicode_escapes();
     return 0;
 }
