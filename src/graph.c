@@ -325,6 +325,10 @@ static int load_edges(
         const json_value_t *edge = json_array_get(edges_json, i);
         const char *source = json_as_string(json_object_get(edge, "source"));
         const char *target = json_as_string(json_object_get(edge, "target"));
+        if (source == NULL || target == NULL) {
+            set_error(error, "edge source and target must be strings", NULL);
+            return 0;
+        }
         size_t source_index = nir_graph_find(graph, source);
         size_t target_index = nir_graph_find(graph, target);
         if (source_index == (size_t)-1 || target_index == (size_t)-1) {

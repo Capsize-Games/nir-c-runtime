@@ -6,6 +6,7 @@ function(nir_add_test name)
 endfunction()
 
 nir_add_test(test_json)
+nir_add_test(test_graph)
 nir_add_test(test_ops)
 nir_add_test(test_conv_net)
 nir_add_test(test_fixed_event)
