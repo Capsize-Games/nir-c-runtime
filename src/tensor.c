@@ -39,8 +39,10 @@ int nir_tensor_bind(
         return 0;
     }
     size_t size = 1;
+    size_t bound_shape[NIR_TENSOR_MAX_DIMS] = {0};
     for (size_t i = 0; i < ndim; i++) {
-        size *= shape[i];
+        bound_shape[i] = shape[i];
+        size *= bound_shape[i];
     }
     if (capacity < size) {
         return 0;
@@ -51,6 +53,7 @@ int nir_tensor_bind(
     memset(tensor, 0, sizeof(*tensor));
     tensor->data = data;
     tensor->ndim = ndim;
+    memcpy(tensor->shape, bound_shape, sizeof(bound_shape));
     tensor->size = size;
     tensor->capacity = capacity;
     return 1;
