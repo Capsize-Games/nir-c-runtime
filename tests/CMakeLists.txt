@@ -13,3 +13,11 @@ nir_add_test(test_fixed_event)
 nir_add_test(test_quantized)
 nir_add_test(test_workspace)
 nir_add_test(test_tensor)
+
+add_executable(test_graph_bias test_graph_bias.c)
+target_link_libraries(test_graph_bias PRIVATE nir_c_runtime)
+foreach(case affine-short affine-long affine-empty affine-invalid affine-exact
+             conv-short conv-long conv-empty conv-invalid conv-exact
+             conv-omitted conv-null)
+  add_test(NAME test_graph_bias_${case} COMMAND test_graph_bias ${case})
+endforeach()

@@ -159,7 +159,9 @@ static int pair_at(const json_value_t *params, const char *key, int *a, int *b) 
     return pair != NULL;
 }
 
-static int load_conv2d(const json_value_t *params, nir_node_t *node) {
+static int load_conv2d(
+    const json_value_t *params, nir_node_t *node, char **error
+) {
     nir_conv2d_params_t *p = &node->params.conv2d;
     const json_value_t *weight = json_object_get(params, "weight");
     p->weight = parse_floats_4d(
@@ -169,9 +171,15 @@ static int load_conv2d(const json_value_t *params, nir_node_t *node) {
         return 0;
     }
     const json_value_t *bias = json_object_get(params, "bias");
-    if (bias != NULL) {
+    if (bias != NULL && bias->type != JSON_NULL) {
         size_t bias_count = 0;
         p->bias = parse_floats_1d(bias, &bias_count);
+        if (p->bias == NULL || bias_count != p->out_channels) {
+            set_error(error,
+                "Conv2d bias must contain one value per output channel",
+                NULL);
+            return 0;
+        }
     } else {
         p->bias = NULL;
     }
@@ -181,7 +189,9 @@ static int load_conv2d(const json_value_t *params, nir_node_t *node) {
     return 1;
 }
 
-static int load_affine(const json_value_t *params, nir_node_t *node) {
+static int load_affine(
+    const json_value_t *params, nir_node_t *node, char **error
+) {
     nir_affine_params_t *p = &node->params.affine;
     const json_value_t *weight = json_object_get(params, "weight");
     p->weight = parse_floats_2d(weight, &p->out_features, &p->in_features);
@@ -190,7 +200,12 @@ static int load_affine(const json_value_t *params, nir_node_t *node) {
     }
     size_t bias_count = 0;
     p->bias = parse_floats_1d(json_object_get(params, "bias"), &bias_count);
-    return p->bias != NULL;
+    if (p->bias == NULL || bias_count != p->out_features) {
+        set_error(error,
+            "Affine bias must contain one value per output feature", NULL);
+        return 0;
+    }
+    return 1;
 }
 
 static void load_pool2d(const json_value_t *params, nir_node_t *node) {
@@ -260,8 +275,8 @@ static int load_node(
     }
     const json_value_t *params = json_object_get(node_json, "params");
     switch (node->kind) {
-        case NIR_NODE_CONV2D: return load_conv2d(params, node);
-        case NIR_NODE_AFFINE: return load_affine(params, node);
+        case NIR_NODE_CONV2D: return load_conv2d(params, node, error);
+        case NIR_NODE_AFFINE: return load_affine(params, node, error);
         case NIR_NODE_AVGPOOL2D:
         case NIR_NODE_SUMPOOL2D:
             load_pool2d(params, node);
