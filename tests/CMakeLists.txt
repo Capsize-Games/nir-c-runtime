@@ -14,6 +14,13 @@ nir_add_test(test_quantized)
 nir_add_test(test_workspace)
 nir_add_test(test_tensor)
 
+# OOM sweep includes src/json.c directly, so it must not link the library
+# (that would duplicate the json_* symbols); it only needs the headers.
+add_executable(test_json_oom test_json_oom.c)
+target_include_directories(test_json_oom PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME test_json_oom COMMAND test_json_oom
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(test_graph_bias test_graph_bias.c)
 target_link_libraries(test_graph_bias PRIVATE nir_c_runtime)
 foreach(case affine-short affine-long affine-empty affine-invalid affine-exact

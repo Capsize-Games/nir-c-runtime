@@ -1,6 +1,7 @@
 #include "nir_c_runtime/graph.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,12 +30,18 @@ typedef struct {
     const json_value_t *data;
     double scale;
     double zero_point;
+    double quant_min;
+    double quant_max;
+    int quantized;
 } weight_view_t;
 
 static int weight_view(const json_value_t *value, weight_view_t *view) {
     view->data = value;
     view->scale = 1.0;
     view->zero_point = 0.0;
+    view->quant_min = -INFINITY;
+    view->quant_max = INFINITY;
+    view->quantized = 0;
     if (value == NULL || value->type == JSON_ARRAY) {
         return value != NULL;
     }
@@ -56,8 +63,11 @@ static int weight_view(const json_value_t *value, weight_view_t *view) {
     view->data = data;
     view->scale = json_as_number(scale, 0.0);
     view->zero_point = json_as_number(zero, 0.0);
+    view->quantized = 1;
+    view->quant_min = strcmp(dtype_name, "int8") == 0 ? -128.0 : 0.0;
+    view->quant_max = strcmp(dtype_name, "int8") == 0 ? 127.0 : 255.0;
     return isfinite(view->scale) && view->scale > 0.0 &&
-           isfinite(view->zero_point);
+           isfinite(view->zero_point) && trunc(view->zero_point) == view->zero_point;
 }
 
 static float decode_weight(
@@ -67,6 +77,26 @@ static float decode_weight(
                    view->scale);
 }
 
+static int checked_product(size_t *product, size_t factor) {
+    if (factor != 0 && *product > (size_t)-1 / factor) return 0;
+    *product *= factor;
+    return 1;
+}
+
+static int valid_number(const json_value_t *value) {
+    return value != NULL && value->type == JSON_NUMBER &&
+           isfinite(value->as.number) && isfinite((float)value->as.number);
+}
+
+static int decode_input_valid(const weight_view_t *view,
+                              const json_value_t *value) {
+    return valid_number(value) &&
+           (!view->quantized ||
+            (trunc(value->as.number) == value->as.number &&
+             value->as.number >= view->quant_min &&
+             value->as.number <= view->quant_max));
+}
+
 /* Flatten a raw or quantized 1D JSON array into a float buffer. */
 static float *parse_floats_1d(const json_value_t *array, size_t *count) {
     weight_view_t view;
@@ -74,12 +104,17 @@ static float *parse_floats_1d(const json_value_t *array, size_t *count) {
         return NULL;
     }
     size_t n = json_array_length(view.data);
+    if (view.data->type != JSON_ARRAY || n > (size_t)-1 / sizeof(float))
+        return NULL;
     float *out = (float *)malloc((n == 0 ? 1 : n) * sizeof(float));
     if (out == NULL) {
         return NULL;
     }
     for (size_t i = 0; i < n; i++) {
-        out[i] = decode_weight(&view, json_array_get(view.data, i));
+        const json_value_t *item = json_array_get(view.data, i);
+        if (!decode_input_valid(&view, item)) { free(out); return NULL; }
+        out[i] = decode_weight(&view, item);
+        if (!isfinite(out[i])) { free(out); return NULL; }
     }
     *count = n;
     return out;
@@ -94,15 +129,24 @@ static float *parse_floats_2d(
         return NULL;
     }
     size_t r = json_array_length(view.data);
+    if (view.data->type != JSON_ARRAY) return NULL;
     size_t c = r > 0 ? json_array_length(json_array_get(view.data, 0)) : 0;
-    float *out = (float *)malloc((r * c == 0 ? 1 : r * c) * sizeof(float));
+    size_t total = r;
+    if (!checked_product(&total, c) || total > (size_t)-1 / sizeof(float))
+        return NULL;
+    float *out = (float *)malloc((total == 0 ? 1 : total) * sizeof(float));
     if (out == NULL) {
         return NULL;
     }
     for (size_t i = 0; i < r; i++) {
         const json_value_t *row = json_array_get(view.data, i);
+        if (row == NULL || row->type != JSON_ARRAY ||
+            json_array_length(row) != c) { free(out); return NULL; }
         for (size_t j = 0; j < c; j++) {
-            out[i * c + j] = decode_weight(&view, json_array_get(row, j));
+            const json_value_t *item = json_array_get(row, j);
+            if (!decode_input_valid(&view, item)) { free(out); return NULL; }
+            out[i * c + j] = decode_weight(&view, item);
+            if (!isfinite(out[i * c + j])) { free(out); return NULL; }
         }
     }
     *rows = r;
@@ -119,13 +163,17 @@ static float *parse_floats_4d(
         return NULL;
     }
     size_t a = json_array_length(view.data);
+    if (view.data->type != JSON_ARRAY) return NULL;
     const json_value_t *l1 = a > 0 ? json_array_get(view.data, 0) : NULL;
     size_t b = json_array_length(l1);
     const json_value_t *l2 = b > 0 ? json_array_get(l1, 0) : NULL;
     size_t c = json_array_length(l2);
     const json_value_t *l3 = c > 0 ? json_array_get(l2, 0) : NULL;
     size_t d = json_array_length(l3);
-    size_t total = a * b * c * d;
+    size_t total = a;
+    if (!checked_product(&total, b) || !checked_product(&total, c) ||
+        !checked_product(&total, d) || total > (size_t)-1 / sizeof(float))
+        return NULL;
     float *out = (float *)malloc((total == 0 ? 1 : total) * sizeof(float));
     if (out == NULL) {
         return NULL;
@@ -133,14 +181,23 @@ static float *parse_floats_4d(
     size_t index = 0;
     for (size_t i = 0; i < a; i++) {
         const json_value_t *dim1 = json_array_get(view.data, i);
+        if (dim1 == NULL || dim1->type != JSON_ARRAY ||
+            json_array_length(dim1) != b) { free(out); return NULL; }
         for (size_t j = 0; j < b; j++) {
             const json_value_t *dim2 = json_array_get(dim1, j);
+            if (dim2 == NULL || dim2->type != JSON_ARRAY ||
+                json_array_length(dim2) != c) { free(out); return NULL; }
             for (size_t k = 0; k < c; k++) {
                 const json_value_t *dim3 = json_array_get(dim2, k);
+                if (dim3 == NULL || dim3->type != JSON_ARRAY ||
+                    json_array_length(dim3) != d) { free(out); return NULL; }
                 for (size_t l = 0; l < d; l++) {
+                    const json_value_t *item = json_array_get(dim3, l);
+                    if (!decode_input_valid(&view, item)) { free(out); return NULL; }
                     out[index++] = decode_weight(
-                        &view, json_array_get(dim3, l)
+                        &view, item
                     );
+                    if (!isfinite(out[index - 1])) { free(out); return NULL; }
                 }
             }
         }
@@ -154,9 +211,17 @@ static float *parse_floats_4d(
 
 static int pair_at(const json_value_t *params, const char *key, int *a, int *b) {
     const json_value_t *pair = json_object_get(params, key);
-    *a = (int)json_as_number(json_array_get(pair, 0), 0.0);
-    *b = (int)json_as_number(json_array_get(pair, 1), 0.0);
-    return pair != NULL;
+    const json_value_t *first = json_array_get(pair, 0);
+    const json_value_t *second = json_array_get(pair, 1);
+    if (pair == NULL || pair->type != JSON_ARRAY ||
+        json_array_length(pair) != 2 || !valid_number(first) ||
+        !valid_number(second) || trunc(first->as.number) != first->as.number ||
+        trunc(second->as.number) != second->as.number ||
+        first->as.number < 0 || second->as.number < 0 ||
+        first->as.number > INT_MAX || second->as.number > INT_MAX) return 0;
+    *a = (int)first->as.number;
+    *b = (int)second->as.number;
+    return 1;
 }
 
 static int load_conv2d(
@@ -167,7 +232,9 @@ static int load_conv2d(
     p->weight = parse_floats_4d(
         weight, &p->out_channels, &p->in_channels, &p->kernel_h, &p->kernel_w
     );
-    if (p->weight == NULL) {
+    if (p->weight == NULL || p->out_channels == 0 || p->in_channels == 0 ||
+        p->kernel_h == 0 || p->kernel_w == 0) {
+        set_error(error, "Conv2d weight must be a nonempty rectangular 4D numeric array", NULL);
         return 0;
     }
     const json_value_t *bias = json_object_get(params, "bias");
@@ -183,9 +250,14 @@ static int load_conv2d(
     } else {
         p->bias = NULL;
     }
-    pair_at(params, "stride", &p->stride_h, &p->stride_w);
-    pair_at(params, "padding", &p->padding_h, &p->padding_w);
-    pair_at(params, "dilation", &p->dilation_h, &p->dilation_w);
+    if (!pair_at(params, "stride", &p->stride_h, &p->stride_w) ||
+        p->stride_h == 0 || p->stride_w == 0 ||
+        !pair_at(params, "padding", &p->padding_h, &p->padding_w) ||
+        !pair_at(params, "dilation", &p->dilation_h, &p->dilation_w) ||
+        p->dilation_h == 0 || p->dilation_w == 0) {
+        set_error(error, "Conv2d stride/dilation must be positive pairs and padding a nonnegative pair", NULL);
+        return 0;
+    }
     return 1;
 }
 
@@ -195,7 +267,8 @@ static int load_affine(
     nir_affine_params_t *p = &node->params.affine;
     const json_value_t *weight = json_object_get(params, "weight");
     p->weight = parse_floats_2d(weight, &p->out_features, &p->in_features);
-    if (p->weight == NULL) {
+    if (p->weight == NULL || p->out_features == 0 || p->in_features == 0) {
+        set_error(error, "Affine weight must be a nonempty rectangular 2D numeric array", NULL);
         return 0;
     }
     size_t bias_count = 0;
@@ -208,23 +281,29 @@ static int load_affine(
     return 1;
 }
 
-static void load_pool2d(const json_value_t *params, nir_node_t *node) {
+static int load_pool2d(const json_value_t *params, nir_node_t *node) {
     nir_pool2d_params_t *p = &node->params.pool2d;
-    pair_at(params, "kernel_size", &p->kernel_h, &p->kernel_w);
-    pair_at(params, "stride", &p->stride_h, &p->stride_w);
-    pair_at(params, "padding", &p->padding_h, &p->padding_w);
+    return pair_at(params, "kernel_size", &p->kernel_h, &p->kernel_w) &&
+        p->kernel_h > 0 && p->kernel_w > 0 &&
+        pair_at(params, "stride", &p->stride_h, &p->stride_w) &&
+        p->stride_h > 0 && p->stride_w > 0 &&
+        pair_at(params, "padding", &p->padding_h, &p->padding_w);
 }
 
-static void load_li(const json_value_t *params, nir_node_t *node) {
-    node->params.li.tau = (float)json_as_number(
-        json_object_get(params, "tau"), 1.0
-    );
-    node->params.li.r = (float)json_as_number(
-        json_object_get(params, "r"), 1.0
-    );
-    node->params.li.v_leak = (float)json_as_number(
-        json_object_get(params, "v_leak"), 0.0
-    );
+static int parameter_number(const json_value_t *params, const char *key,
+                            float fallback, float *out) {
+    const json_value_t *value = json_object_get(params, key);
+    if (value == NULL) { *out = fallback; return 1; }
+    if (!valid_number(value)) return 0;
+    *out = (float)value->as.number;
+    return isfinite(*out);
+}
+
+static int load_li(const json_value_t *params, nir_node_t *node) {
+    return parameter_number(params, "tau", 1.0f, &node->params.li.tau) &&
+        node->params.li.tau > 0.0f &&
+        parameter_number(params, "r", 1.0f, &node->params.li.r) &&
+        parameter_number(params, "v_leak", 0.0f, &node->params.li.v_leak);
 }
 
 typedef struct {
@@ -264,11 +343,15 @@ static int load_node(
     const char *kind_text = json_as_string(
         json_object_get(node_json, "kind")
     );
-    if (name == NULL || kind_text == NULL) {
+    if (name == NULL || name[0] == '\0' || kind_text == NULL) {
         set_error(error, "node missing name or kind", NULL);
         return 0;
     }
     node->name = dup_string(name);
+    if (node->name == NULL) {
+        set_error(error, "out of memory", NULL);
+        return 0;
+    }
     if (!resolve_kind(kind_text, &node->kind)) {
         set_error(error, "unsupported node kind: %s", kind_text);
         return 0;
@@ -279,20 +362,30 @@ static int load_node(
         case NIR_NODE_AFFINE: return load_affine(params, node, error);
         case NIR_NODE_AVGPOOL2D:
         case NIR_NODE_SUMPOOL2D:
-            load_pool2d(params, node);
+            if (!load_pool2d(params, node)) {
+                set_error(error, "Pool2d kernel and stride must be positive pairs and padding a nonnegative pair", NULL);
+                return 0;
+            }
             return 1;
         case NIR_NODE_LI:
-            load_li(params, node);
+            if (!load_li(params, node)) {
+                set_error(error, "LI tau must be positive and parameters finite numbers", NULL);
+                return 0;
+            }
             return 1;
         case NIR_NODE_THRESHOLD:
-            node->params.threshold.threshold = (float)json_as_number(
-                json_object_get(params, "threshold"), 1.0
-            );
+            if (!parameter_number(params, "threshold", 1.0f,
+                                  &node->params.threshold.threshold)) {
+                set_error(error, "Threshold parameter must be a finite number", NULL);
+                return 0;
+            }
             return 1;
         case NIR_NODE_SCALE:
-            node->params.scale.scale = (float)json_as_number(
-                json_object_get(params, "scale"), 1.0
-            );
+            if (!parameter_number(params, "scale", 1.0f,
+                                  &node->params.scale.scale)) {
+                set_error(error, "Scale parameter must be a finite number", NULL);
+                return 0;
+            }
             return 1;
         case NIR_NODE_INPUT:
         case NIR_NODE_OUTPUT:
@@ -318,6 +411,8 @@ static void free_node(nir_node_t *node) {
 }
 
 size_t nir_graph_find(const nir_graph_t *graph, const char *name) {
+    if (graph == NULL || name == NULL || graph->nodes == NULL)
+        return (size_t)-1;
     for (size_t i = 0; i < graph->node_count; i++) {
         if (strcmp(graph->nodes[i].name, name) == 0) {
             return i;
@@ -330,6 +425,10 @@ static int load_edges(
     const json_value_t *edges_json, nir_graph_t *graph, char **error
 ) {
     size_t count = json_array_length(edges_json);
+    if (count > (size_t)-1 / sizeof(nir_edge_t)) {
+        set_error(error, "graph has too many edges", NULL);
+        return 0;
+    }
     graph->edges = (nir_edge_t *)malloc(
         (count == 0 ? 1 : count) * sizeof(nir_edge_t)
     );
@@ -360,14 +459,28 @@ static int load_edges(
 int nir_graph_load(
     const json_value_t *summary, nir_graph_t *out, char **error
 ) {
+    if (error != NULL) *error = NULL;
+    if (out == NULL) {
+        set_error(error, "graph output must not be null", NULL);
+        return 0;
+    }
     memset(out, 0, sizeof(*out));
     const json_value_t *nodes_json = json_object_get(summary, "nodes");
     const json_value_t *edges_json = json_object_get(summary, "edges");
-    if (nodes_json == NULL || edges_json == NULL) {
+    if (nodes_json == NULL || nodes_json->type != JSON_ARRAY ||
+        edges_json == NULL || edges_json->type != JSON_ARRAY) {
         set_error(error, "graph JSON missing \"nodes\" or \"edges\"", NULL);
         return 0;
     }
     size_t node_count = json_array_length(nodes_json);
+    if (node_count == 0) {
+        set_error(error, "graph must contain at least one node", NULL);
+        return 0;
+    }
+    if (node_count > (size_t)-1 / sizeof(nir_node_t)) {
+        set_error(error, "graph has too many nodes", NULL);
+        return 0;
+    }
     out->nodes = (nir_node_t *)calloc(
         node_count == 0 ? 1 : node_count, sizeof(nir_node_t)
     );
@@ -380,6 +493,13 @@ int nir_graph_load(
         if (!load_node(json_array_get(nodes_json, i), &out->nodes[i], error)) {
             nir_graph_free(out);
             return 0;
+        }
+        for (size_t previous = 0; previous < i; previous++) {
+            if (strcmp(out->nodes[previous].name, out->nodes[i].name) == 0) {
+                set_error(error, "duplicate node name: %s", out->nodes[i].name);
+                nir_graph_free(out);
+                return 0;
+            }
         }
         if (out->nodes[i].kind == NIR_NODE_INPUT) {
             out->input_index = i;

@@ -46,6 +46,31 @@ static void test_malformed_input_is_rejected(void) {
     free(error);
 }
 
+static void test_json_number_grammar(void) {
+    const char *invalid[] = {"01", "-01", ".5", "1.", "1e", "1e+", "--1"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        char *error = NULL;
+        CHECK(json_parse(invalid[i], &error) == NULL);
+        CHECK(error != NULL);
+        free(error);
+    }
+    const char *valid[] = {"0", "-0", "1.0", "-12.5e+2"};
+    for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); i++) {
+        char *error = NULL;
+        json_value_t *value = json_parse(valid[i], &error);
+        CHECK(value != NULL && error == NULL);
+        json_free(value);
+    }
+}
+
+static void test_unescaped_control_byte_is_rejected(void) {
+    const char invalid[] = {'"', 'a', '\n', 'b', '"', '\0'};
+    char *error = NULL;
+    CHECK(json_parse(invalid, &error) == NULL);
+    CHECK(error != NULL);
+    free(error);
+}
+
 static void check_invalid_unicode_escape(const char *text) {
     /* Allocate exactly through the NUL so ASan catches cursor overruns. */
     size_t length = strlen(text) + 1;
@@ -81,11 +106,40 @@ static void test_valid_bmp_unicode_escapes(void) {
     json_free(value);
 }
 
+static void test_surrogates_nul_and_nesting(void) {
+    const char *invalid[] = {"\"\\uD800\"", "\"\\uDC00\"",
+                             "\"\\uD800\\u0041\"", "\"\\u0000\""};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        char *error = NULL;
+        CHECK(json_parse(invalid[i], &error) == NULL);
+        CHECK(error != NULL);
+        free(error);
+    }
+    char *error = NULL;
+    json_value_t *emoji = json_parse("\"\\uD83D\\uDE00\"", &error);
+    CHECK(emoji != NULL && error == NULL);
+    CHECK(strcmp(json_as_string(emoji), "\xF0\x9F\x98\x80") == 0);
+    json_free(emoji);
+
+    char nested[520];
+    size_t depth = 257;
+    memset(nested, '[', depth);
+    nested[depth] = '0';
+    memset(nested + depth + 1, ']', depth);
+    nested[depth * 2 + 1] = '\0';
+    CHECK(json_parse(nested, &error) == NULL);
+    CHECK(error != NULL);
+    free(error);
+}
+
 int main(void) {
     test_scalars();
     test_array_and_object();
     test_malformed_input_is_rejected();
+    test_json_number_grammar();
+    test_unescaped_control_byte_is_rejected();
     test_invalid_unicode_escapes_are_rejected();
     test_valid_bmp_unicode_escapes();
+    test_surrogates_nul_and_nesting();
     return 0;
 }

@@ -43,10 +43,10 @@ The repository has no separate C formatter or static type checker today;
 
 ## Validation boundaries
 
-The hosted workflow uses the repository-scoped `nir-c-runtime-ci` self-hosted
-runner for both the Release test matrix and the AddressSanitizer/UBSan pass.
-Keep that label tied to this repository's runner and do not move jobs to an
-unrelated machine without recording the change in the CI issue.
+This repository is public. CI must use GitHub-hosted runners, with Debug and
+Release builds plus an AddressSanitizer/UBSan pass. Do not attach a workstation
+runner or route pull-request jobs to a private machine. The owner authorized
+public visibility and this CI migration on 2026-10-12.
 
 The committed fixtures are small and hand-inspectable. The real-model timing
 and bit-exact reference result described in `README.md` are evidence for the

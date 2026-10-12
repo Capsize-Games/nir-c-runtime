@@ -40,8 +40,11 @@ struct json_value {
     } as;
 };
 
-/* Parse `text` (NUL-terminated). Returns NULL and sets *error to a
- * malloc'd message on failure; the caller owns and must free it. */
+/* Parse `text` (NUL-terminated) using JSON number and string grammar.
+ * Unicode escapes are decoded to UTF-8; unpaired surrogates and embedded
+ * NUL escapes are rejected because strings are exposed as C strings.
+ * Nesting deeper than 256 containers is rejected. Returns NULL and sets
+ * *error to a malloc'd message on failure; the caller owns and must free it. */
 json_value_t *json_parse(const char *text, char **error);
 
 /* Recursively free a value returned by json_parse. */
