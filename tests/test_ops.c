@@ -126,6 +126,110 @@ static void test_flatten_preserves_data_order(void) {
     nir_tensor_free(&output);
 }
 
+static void test_ops_reject_malformed_shapes_and_geometry(void) {
+    float data[4] = {1, 2, 3, 4};
+    size_t wrong_shape[2] = {2, 2};
+    nir_tensor_t wrong_rank = {0};
+    CHECK(nir_tensor_bind(&wrong_rank, data, 4, wrong_shape, 2));
+    float weight[1] = {1};
+    nir_conv2d_params_t conv = {1, 1, 1, 1, weight, NULL, 1, 1, 0, 0, 1, 1};
+    nir_tensor_t result = nir_op_conv2d(&conv, &wrong_rank);
+    CHECK(result.data == NULL);
+    nir_pool2d_params_t pool = {2, 2, 0, 1, 0, 0};
+    result = nir_op_avgpool2d(&pool, &wrong_rank);
+    CHECK(result.data == NULL);
+    nir_tensor_free(&wrong_rank);
+}
+
+static void test_ops_reject_aliasing_and_mismatched_state(void) {
+    size_t shape[1] = {2};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    input.data[0] = 2;
+    input.data[1] = 3;
+    nir_scale_params_t scale = {2};
+    nir_tensor_t output = {0};
+    CHECK(nir_tensor_bind(&output, input.data, input.capacity, shape, 1));
+    CHECK(nir_op_scale_into(&scale, &input, &output));
+    CHECK(input.data[0] == 4 && input.data[1] == 6);
+    float shifted[3] = {2, 3, 0};
+    CHECK(nir_tensor_bind(&output, shifted + 1, 2, shape, 1));
+    nir_tensor_t shifted_input = {0};
+    CHECK(nir_tensor_bind(&shifted_input, shifted, 3, shape, 1));
+    CHECK(!nir_op_scale_into(&scale, &shifted_input, &output));
+    CHECK(shifted[0] == 2 && shifted[1] == 3);
+
+    nir_li_params_t li = {1, 1, 0};
+    size_t wrong_shape[1] = {1};
+    nir_tensor_t prev = nir_tensor_alloc(wrong_shape, 1);
+    CHECK(!nir_op_li_into(&li, &input, &prev, &output));
+    nir_tensor_free(&prev);
+    nir_tensor_free(&shifted_input);
+    nir_tensor_free(&output);
+    nir_tensor_free(&input);
+}
+
+static void test_convenience_ops_accept_null_inputs_safely(void) {
+    nir_tensor_t out = nir_op_affine(NULL, NULL);
+    CHECK(out.data == NULL);
+    out = nir_op_flatten(NULL);
+    CHECK(out.data == NULL);
+    out = nir_op_li(NULL, NULL, NULL);
+    CHECK(out.data == NULL);
+    out = nir_op_threshold(NULL, NULL);
+    CHECK(out.data == NULL);
+    out = nir_op_scale(NULL, NULL);
+    CHECK(out.data == NULL);
+}
+
+static void test_into_ops_accept_same_tensor_alias(void) {
+    size_t shape[2] = {1, 2};
+    nir_tensor_t tensor = nir_tensor_alloc(shape, 2);
+    tensor.data[0] = 2;
+    tensor.data[1] = 3;
+    nir_scale_params_t scale = {2};
+    CHECK(nir_op_scale_into(&scale, &tensor, &tensor));
+    CHECK(tensor.data[0] == 4 && tensor.data[1] == 6);
+
+    nir_threshold_params_t threshold = {4};
+    CHECK(nir_op_threshold_into(&threshold, &tensor, &tensor));
+    CHECK(tensor.data[0] == 0 && tensor.data[1] == 1);
+
+    nir_li_params_t li = {1, 1, 0};
+    CHECK(nir_op_li_into(&li, &tensor, NULL, &tensor));
+    CHECK(tensor.data[0] == 0 && tensor.data[1] > 0);
+    nir_tensor_free(&tensor);
+
+    size_t spatial_shape[2] = {2, 2};
+    tensor = nir_tensor_alloc(spatial_shape, 2);
+    for (size_t i = 0; i < 4; i++) tensor.data[i] = (float)(i + 1);
+    CHECK(nir_op_flatten_into(&tensor, &tensor));
+    CHECK(tensor.ndim == 1 && tensor.shape[0] == 4 && tensor.size == 4);
+    CHECK(tensor.data[0] == 1 && tensor.data[3] == 4);
+    nir_tensor_free(&tensor);
+}
+
+static void test_affine_alias_failure_preserves_tensor(void) {
+    size_t shape[1] = {2};
+    nir_tensor_t tensor = nir_tensor_alloc(shape, 1);
+    tensor.data[0] = 5;
+    tensor.data[1] = 7;
+    float weight[2] = {1, 1};
+    float bias[1] = {0};
+    nir_affine_params_t params = {1, 2, weight, bias};
+    CHECK(!nir_op_affine_into(&params, &tensor, &tensor));
+    CHECK(tensor.ndim == 1 && tensor.shape[0] == 2 && tensor.size == 2 &&
+        tensor.data[0] == 5 && tensor.data[1] == 7);
+
+    nir_tensor_t overlapping_output = {0};
+    CHECK(nir_tensor_bind(&overlapping_output, tensor.data, 2, shape, 1));
+    CHECK(!nir_op_affine_into(&params, &tensor, &overlapping_output));
+    CHECK(overlapping_output.ndim == 1 && overlapping_output.shape[0] == 2 &&
+        overlapping_output.size == 2 && tensor.data[0] == 5 &&
+        tensor.data[1] == 7);
+    nir_tensor_free(&overlapping_output);
+    nir_tensor_free(&tensor);
+}
+
 int main(void) {
     test_affine();
     test_threshold_is_strict();
@@ -134,5 +238,10 @@ int main(void) {
     test_conv2d_identity_kernel();
     test_avgpool_and_sumpool_relationship();
     test_flatten_preserves_data_order();
+    test_ops_reject_malformed_shapes_and_geometry();
+    test_ops_reject_aliasing_and_mismatched_state();
+    test_convenience_ops_accept_null_inputs_safely();
+    test_into_ops_accept_same_tensor_alias();
+    test_affine_alias_failure_preserves_tensor();
     return 0;
 }

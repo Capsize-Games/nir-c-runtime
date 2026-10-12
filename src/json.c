@@ -8,9 +8,11 @@
 typedef struct {
     const char *cursor;
     char *error;
+    size_t depth;
 } parser_t;
 
 static json_value_t *parse_value(parser_t *p);
+static json_value_t *parse_value_inner(parser_t *p);
 
 static void skip_whitespace(parser_t *p) {
     while (*p->cursor == ' ' || *p->cursor == '\t' || *p->cursor == '\n' ||
@@ -40,6 +42,8 @@ static json_value_t *alloc_value(json_type_t type) {
 
 static int append_char(char **buffer, size_t *len, size_t *cap, char c) {
     if (*len + 1 >= *cap) {
+        if (*len > (size_t)-1 - 2 || (*cap != 0 && *cap > (size_t)-1 / 2))
+            return 0;
         size_t new_cap = (*cap == 0) ? 16 : (*cap * 2);
         char *grown = (char *)realloc(*buffer, new_cap);
         if (grown == NULL) {
@@ -52,22 +56,26 @@ static int append_char(char **buffer, size_t *len, size_t *cap, char c) {
     return 1;
 }
 
-/* Encodes a BMP code point as UTF-8; surrogate pairs are not
- * combined, since NIR's own strings (node names/kinds) never need
- * them -- a lone \uXXXX escape is all this format actually emits. */
-static void append_utf8(char **buffer, size_t *len, size_t *cap,
-                         unsigned int code_point) {
+/* Encode a Unicode code point as UTF-8. */
+static int append_utf8(char **buffer, size_t *len, size_t *cap,
+                       unsigned int code_point) {
     if (code_point < 0x80) {
-        append_char(buffer, len, cap, (char)code_point);
+        return append_char(buffer, len, cap, (char)code_point);
     } else if (code_point < 0x800) {
-        append_char(buffer, len, cap, (char)(0xC0 | (code_point >> 6)));
-        append_char(buffer, len, cap, (char)(0x80 | (code_point & 0x3F)));
-    } else {
-        append_char(buffer, len, cap, (char)(0xE0 | (code_point >> 12)));
-        append_char(
+        return append_char(buffer, len, cap, (char)(0xC0 | (code_point >> 6))) &&
+            append_char(buffer, len, cap, (char)(0x80 | (code_point & 0x3F)));
+    } else if (code_point < 0x10000) {
+        return append_char(buffer, len, cap, (char)(0xE0 | (code_point >> 12))) &&
+            append_char(
             buffer, len, cap, (char)(0x80 | ((code_point >> 6) & 0x3F))
-        );
-        append_char(buffer, len, cap, (char)(0x80 | (code_point & 0x3F)));
+        ) && append_char(buffer, len, cap, (char)(0x80 | (code_point & 0x3F)));
+    } else {
+        return append_char(buffer, len, cap, (char)(0xF0 | (code_point >> 18))) &&
+            append_char(buffer, len, cap,
+                        (char)(0x80 | ((code_point >> 12) & 0x3F))) &&
+            append_char(buffer, len, cap,
+                        (char)(0x80 | ((code_point >> 6) & 0x3F))) &&
+            append_char(buffer, len, cap, (char)(0x80 | (code_point & 0x3F)));
     }
 }
 
@@ -92,6 +100,33 @@ static int parse_unicode_escape(parser_t *p, unsigned int *code_point) {
     return 1;
 }
 
+static int parse_unicode_codepoint(parser_t *p, unsigned int *code_point) {
+    if (!parse_unicode_escape(p, code_point)) return 0;
+    if (*code_point == 0) {
+        set_error(p, "NUL is not supported in strings");
+        return 0;
+    }
+    if (*code_point >= 0xD800 && *code_point <= 0xDBFF) {
+        if (p->cursor[1] != '\\' || p->cursor[2] != 'u') {
+            set_error(p, "unpaired high surrogate");
+            return 0;
+        }
+        p->cursor += 2;
+        unsigned int low = 0;
+        if (!parse_unicode_escape(p, &low)) return 0;
+        if (low < 0xDC00 || low > 0xDFFF) {
+            set_error(p, "invalid low surrogate");
+            return 0;
+        }
+        *code_point = 0x10000 + ((*code_point - 0xD800) << 10) +
+                      (low - 0xDC00);
+    } else if (*code_point >= 0xDC00 && *code_point <= 0xDFFF) {
+        set_error(p, "unpaired low surrogate");
+        return 0;
+    }
+    return 1;
+}
+
 static char *parse_raw_string(parser_t *p) {
     if (*p->cursor != '"') {
         set_error(p, "expected string");
@@ -106,24 +141,34 @@ static char *parse_raw_string(parser_t *p) {
             free(buffer);
             return NULL;
         }
+        if ((unsigned char)*p->cursor < 0x20 && *p->cursor != '\\') {
+            set_error(p, "unescaped control character in string");
+            free(buffer);
+            return NULL;
+        }
         if (*p->cursor == '\\') {
             p->cursor++;
+            int appended = 1;
             switch (*p->cursor) {
-                case '"': append_char(&buffer, &len, &cap, '"'); break;
-                case '\\': append_char(&buffer, &len, &cap, '\\'); break;
-                case '/': append_char(&buffer, &len, &cap, '/'); break;
-                case 'b': append_char(&buffer, &len, &cap, '\b'); break;
-                case 'f': append_char(&buffer, &len, &cap, '\f'); break;
-                case 'n': append_char(&buffer, &len, &cap, '\n'); break;
-                case 'r': append_char(&buffer, &len, &cap, '\r'); break;
-                case 't': append_char(&buffer, &len, &cap, '\t'); break;
+                case '"':
+                    appended = append_char(&buffer, &len, &cap, '"');
+                    break;
+                case '\\':
+                    appended = append_char(&buffer, &len, &cap, '\\');
+                    break;
+                case '/': appended = append_char(&buffer, &len, &cap, '/'); break;
+                case 'b': appended = append_char(&buffer, &len, &cap, '\b'); break;
+                case 'f': appended = append_char(&buffer, &len, &cap, '\f'); break;
+                case 'n': appended = append_char(&buffer, &len, &cap, '\n'); break;
+                case 'r': appended = append_char(&buffer, &len, &cap, '\r'); break;
+                case 't': appended = append_char(&buffer, &len, &cap, '\t'); break;
                 case 'u': {
                     unsigned int code_point = 0;
-                    if (!parse_unicode_escape(p, &code_point)) {
+                    if (!parse_unicode_codepoint(p, &code_point)) {
                         free(buffer);
                         return NULL;
                     }
-                    append_utf8(&buffer, &len, &cap, code_point);
+                    appended = append_utf8(&buffer, &len, &cap, code_point);
                     break;
                 }
                 default:
@@ -131,16 +176,26 @@ static char *parse_raw_string(parser_t *p) {
                     free(buffer);
                     return NULL;
             }
+            if (!appended) {
+                set_error(p, "out of memory parsing string");
+                free(buffer);
+                return NULL;
+            }
             p->cursor++;
         } else {
-            append_char(&buffer, &len, &cap, *p->cursor);
+            if (!append_char(&buffer, &len, &cap, *p->cursor)) {
+                set_error(p, "out of memory parsing string");
+                free(buffer);
+                return NULL;
+            }
             p->cursor++;
         }
     }
     p->cursor++;
-    append_char(&buffer, &len, &cap, '\0');
-    if (buffer == NULL) {
-        buffer = (char *)calloc(1, 1);
+    if (!append_char(&buffer, &len, &cap, '\0')) {
+        set_error(p, "out of memory parsing string");
+        free(buffer);
+        return NULL;
     }
     return buffer;
 }
@@ -160,13 +215,45 @@ static json_value_t *parse_string(parser_t *p) {
 }
 
 static json_value_t *parse_number(parser_t *p) {
-    char *end = NULL;
-    double number = strtod(p->cursor, &end);
-    if (end == p->cursor) {
+    const char *start = p->cursor;
+    const char *cursor = start;
+    if (*cursor == '-') cursor++;
+    if (*cursor == '0') {
+        cursor++;
+        if (isdigit((unsigned char)*cursor)) {
+            set_error(p, "leading zero in number");
+            return NULL;
+        }
+    } else if (*cursor >= '1' && *cursor <= '9') {
+        do { cursor++; } while (isdigit((unsigned char)*cursor));
+    } else {
         set_error(p, "invalid number");
         return NULL;
     }
-    p->cursor = end;
+    if (*cursor == '.') {
+        cursor++;
+        if (!isdigit((unsigned char)*cursor)) {
+            set_error(p, "fraction requires a digit");
+            return NULL;
+        }
+        do { cursor++; } while (isdigit((unsigned char)*cursor));
+    }
+    if (*cursor == 'e' || *cursor == 'E') {
+        cursor++;
+        if (*cursor == '+' || *cursor == '-') cursor++;
+        if (!isdigit((unsigned char)*cursor)) {
+            set_error(p, "exponent requires a digit");
+            return NULL;
+        }
+        do { cursor++; } while (isdigit((unsigned char)*cursor));
+    }
+    char *end = NULL;
+    double number = strtod(start, &end);
+    if (end != cursor) {
+        set_error(p, "invalid number");
+        return NULL;
+    }
+    p->cursor = cursor;
     json_value_t *value = alloc_value(JSON_NUMBER);
     if (value != NULL) {
         value->as.number = number;
@@ -176,6 +263,8 @@ static json_value_t *parse_number(parser_t *p) {
 
 static int array_push(json_value_t *array, json_value_t *item) {
     size_t count = array->as.array.count;
+    if (count == (size_t)-1 || count + 1 > (size_t)-1 / sizeof(json_value_t *))
+        return 0;
     json_value_t **grown = (json_value_t **)realloc(
         array->as.array.items, (count + 1) * sizeof(json_value_t *)
     );
@@ -191,6 +280,10 @@ static int array_push(json_value_t *array, json_value_t *item) {
 static json_value_t *parse_array(parser_t *p) {
     p->cursor++; /* '[' */
     json_value_t *array = alloc_value(JSON_ARRAY);
+    if (array == NULL) {
+        set_error(p, "out of memory");
+        return NULL;
+    }
     skip_whitespace(p);
     if (*p->cursor == ']') {
         p->cursor++;
@@ -199,8 +292,14 @@ static json_value_t *parse_array(parser_t *p) {
     while (1) {
         skip_whitespace(p);
         json_value_t *item = parse_value(p);
-        if (item == NULL || !array_push(array, item)) {
+        if (item == NULL) {
             json_free(array);
+            return NULL;
+        }
+        if (!array_push(array, item)) {
+            json_free(item);
+            json_free(array);
+            set_error(p, "out of memory");
             return NULL;
         }
         skip_whitespace(p);
@@ -220,18 +319,19 @@ static json_value_t *parse_array(parser_t *p) {
 
 static int object_push(json_value_t *object, char *key, json_value_t *val) {
     size_t count = object->as.object.count;
+    if (count == (size_t)-1 || count + 1 > (size_t)-1 / sizeof(char *) ||
+        count + 1 > (size_t)-1 / sizeof(json_value_t *)) return 0;
     char **keys = (char **)realloc(
         object->as.object.keys, (count + 1) * sizeof(char *)
     );
+    if (keys == NULL) return 0;
+    object->as.object.keys = keys;
     json_value_t **values = (json_value_t **)realloc(
         object->as.object.values, (count + 1) * sizeof(json_value_t *)
     );
-    if (keys == NULL || values == NULL) {
-        return 0;
-    }
+    if (values == NULL) return 0;
     keys[count] = key;
     values[count] = val;
-    object->as.object.keys = keys;
     object->as.object.values = values;
     object->as.object.count = count + 1;
     return 1;
@@ -240,6 +340,10 @@ static int object_push(json_value_t *object, char *key, json_value_t *val) {
 static json_value_t *parse_object(parser_t *p) {
     p->cursor++; /* '{' */
     json_value_t *object = alloc_value(JSON_OBJECT);
+    if (object == NULL) {
+        set_error(p, "out of memory");
+        return NULL;
+    }
     skip_whitespace(p);
     if (*p->cursor == '}') {
         p->cursor++;
@@ -262,9 +366,16 @@ static json_value_t *parse_object(parser_t *p) {
         p->cursor++;
         skip_whitespace(p);
         json_value_t *val = parse_value(p);
-        if (val == NULL || !object_push(object, key, val)) {
+        if (val == NULL) {
             free(key);
             json_free(object);
+            return NULL;
+        }
+        if (!object_push(object, key, val)) {
+            free(key);
+            json_free(val);
+            json_free(object);
+            set_error(p, "out of memory");
             return NULL;
         }
         skip_whitespace(p);
@@ -287,6 +398,17 @@ static int starts_with(const char *text, const char *literal) {
 }
 
 static json_value_t *parse_value(parser_t *p) {
+    if (p->depth >= 256) {
+        set_error(p, "maximum JSON nesting depth exceeded");
+        return NULL;
+    }
+    p->depth++;
+    json_value_t *value = parse_value_inner(p);
+    p->depth--;
+    return value;
+}
+
+static json_value_t *parse_value_inner(parser_t *p) {
     skip_whitespace(p);
     switch (*p->cursor) {
         case '"': return parse_string(p);
@@ -325,8 +447,17 @@ static json_value_t *parse_value(parser_t *p) {
 }
 
 json_value_t *json_parse(const char *text, char **error) {
-    parser_t p = {text, NULL};
+    if (error != NULL) *error = NULL;
+    if (text == NULL) {
+        if (error != NULL) {
+            *error = (char *)malloc(24);
+            if (*error != NULL) snprintf(*error, 24, "null JSON input");
+        }
+        return NULL;
+    }
+    parser_t p = {text, NULL, 0};
     json_value_t *value = parse_value(&p);
+    if (value == NULL && p.error == NULL) set_error(&p, "out of memory");
     if (value != NULL) {
         skip_whitespace(&p);
         if (*p.cursor != '\0') {
@@ -374,7 +505,7 @@ void json_free(json_value_t *value) {
 const json_value_t *json_object_get(
     const json_value_t *value, const char *key
 ) {
-    if (value == NULL || value->type != JSON_OBJECT) {
+    if (value == NULL || value->type != JSON_OBJECT || key == NULL) {
         return NULL;
     }
     for (size_t i = 0; i < value->as.object.count; i++) {

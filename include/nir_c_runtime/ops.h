@@ -9,6 +9,11 @@
 #include "nir_c_runtime/graph.h"
 #include "nir_c_runtime/tensor.h"
 
+/* For *_into calls, output storage must have capacity for the result. Spatial
+ * operators and affine require storage disjoint from their inputs; elementwise
+ * operators permit an exact data-pointer alias but reject partial overlap.
+ * Flatten supports overlapping storage through a move-safe copy. */
+
 /* 2D convolution, zero-padded, matching torch.nn.functional.conv2d.
  * `input` is (in_channels, H, W); the result is
  * (out_channels, out_H, out_W). */

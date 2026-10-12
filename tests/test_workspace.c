@@ -3,9 +3,69 @@
 #include "nir_c_runtime/runtime.h"
 #include "test_util.h"
 
+#include <stdint.h>
+
 static void bind_vector(nir_tensor_t *tensor, float *data, size_t size) {
     size_t shape[1] = {size};
     CHECK(nir_tensor_bind(tensor, data, size, shape, 1));
+}
+
+static void test_runtime_rejects_invalid_arguments_and_edges(void) {
+    char *error = NULL;
+    nir_graph_t graph = {0};
+    nir_runtime_t runtime;
+    CHECK(!nir_runtime_init(NULL, &graph, &error));
+    CHECK(error != NULL);
+    free(error);
+    error = NULL;
+    CHECK(!nir_runtime_init(&runtime, NULL, &error));
+    CHECK(error != NULL);
+    free(error);
+    error = NULL;
+    nir_runtime_free(&runtime);
+
+    nir_node_t nodes[2] = {
+        {.name = "input", .kind = NIR_NODE_INPUT},
+        {.name = "output", .kind = NIR_NODE_OUTPUT},
+    };
+    nir_edge_t edge = {.source_index = 2, .target_index = 1};
+    graph.nodes = nodes;
+    graph.node_count = 2;
+    graph.edges = &edge;
+    graph.edge_count = 1;
+    graph.input_index = 0;
+    graph.output_index = 1;
+    CHECK(!nir_runtime_init(&runtime, &graph, &error));
+    CHECK(error != NULL);
+    free(error);
+    error = NULL;
+    nir_runtime_free(&runtime);
+
+    graph.edge_count = 0;
+    graph.edges = NULL;
+    graph.node_count = SIZE_MAX;
+    CHECK(!nir_runtime_init(&runtime, &graph, &error));
+    CHECK(error != NULL);
+    free(error);
+    error = NULL;
+    nir_runtime_free(&runtime);
+
+    CHECK(!nir_runtime_run(NULL, NULL, 1, NULL, &error));
+    CHECK(error != NULL);
+    free(error);
+    error = NULL;
+
+    graph.node_count = 2;
+    nir_runtime_t partial = {.graph = &graph};
+    CHECK(!nir_runtime_run(&partial, NULL, 1, NULL, &error));
+    CHECK(error != NULL);
+    free(error);
+    error = NULL;
+    CHECK(!nir_runtime_run_workspace(
+        &partial, NULL, 1, NULL, NULL, &error
+    ));
+    CHECK(error != NULL);
+    free(error);
 }
 
 static void test_workspace_matches_allocating_runtime(void) {
@@ -182,6 +242,7 @@ static void test_workspace_preserves_delay_and_li_state(void) {
 }
 
 int main(void) {
+    test_runtime_rejects_invalid_arguments_and_edges();
     test_workspace_matches_allocating_runtime();
     test_workspace_preserves_delay_and_li_state();
     return 0;

@@ -1,35 +1,104 @@
 #include "nir_c_runtime/ops.h"
 
 #include <math.h>
+#include <stdint.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define NIR_CONV_OUTPUT_TILE 4u
 
-static size_t conv_out_dim(
-    size_t in, int padding, int dilation, int kernel, int stride
+static int shape_size(const size_t *shape, size_t ndim, size_t *size) {
+    if (shape == NULL || ndim > NIR_TENSOR_MAX_DIMS) return 0;
+    size_t n = 1;
+    for (size_t i = 0; i < ndim; i++) {
+        if (shape[i] != 0 && n > SIZE_MAX / shape[i]) return 0;
+        n *= shape[i];
+    }
+    if (n > SIZE_MAX / sizeof(float)) return 0;
+    *size = n;
+    return 1;
+}
+
+static int checked_mul(size_t a, size_t b, size_t *out) {
+    if (b != 0 && a > SIZE_MAX / b) return 0;
+    *out = a * b;
+    return 1;
+}
+
+static int fits_padded_long(size_t in, int padding) {
+    return padding >= 0 && (long long)padding * 2 <= LONG_MAX &&
+        in <= (size_t)(LONG_MAX - (long)((long long)padding * 2));
+}
+
+static int tensor_valid(const nir_tensor_t *t, size_t ndim) {
+    size_t size;
+    return t != NULL && t->data != NULL && t->ndim == ndim &&
+        shape_size(t->shape, t->ndim, &size) && size == t->size &&
+        t->capacity >= size;
+}
+
+static int tensor_same_shape(const nir_tensor_t *a, const nir_tensor_t *b) {
+    if (a->ndim != b->ndim) return 0;
+    for (size_t i = 0; i < a->ndim; i++) {
+        if (a->shape[i] != b->shape[i]) return 0;
+    }
+    return 1;
+}
+
+static int tensors_overlap(const nir_tensor_t *a, const nir_tensor_t *b) {
+    uintptr_t ab = (uintptr_t)a->data, bb = (uintptr_t)b->data;
+    size_t as = a->size * sizeof(float), bs = b->size * sizeof(float);
+    if (as == 0 || bs == 0) return 0;
+    return ab <= UINTPTR_MAX - as && bb <= UINTPTR_MAX - bs &&
+        ab < bb + bs && bb < ab + as;
+}
+
+static int tensors_partially_overlap(const nir_tensor_t *a, const nir_tensor_t *b) {
+    return a->data != b->data && tensors_overlap(a, b);
+}
+
+static int overlaps_output_shape(
+    const nir_tensor_t *input, const nir_tensor_t *output,
+    const size_t *shape, size_t ndim
 ) {
-    long numerator = (long)in + 2L * padding - dilation * (kernel - 1) - 1;
-    return (size_t)(numerator / stride + 1);
+    size_t size;
+    if (output == NULL || output->data == NULL ||
+        !shape_size(shape, ndim, &size)) return 0;
+    nir_tensor_t planned = *output;
+    planned.size = size;
+    return tensors_overlap(input, &planned);
+}
+
+static int conv_out_dim(
+    size_t in, int padding, int dilation, size_t kernel, int stride,
+    size_t *out
+) {
+    if (!fits_padded_long(in, padding) || dilation <= 0 ||
+        kernel == 0 || kernel > (size_t)INT_MAX || stride <= 0) return 0;
+    long long numerator = (long long)in + 2LL * padding -
+        (long long)dilation * ((long long)kernel - 1) - 1;
+    if (numerator < 0) return 0;
+    *out = (size_t)(numerator / stride + 1);
+    return 1;
 }
 
 static int prepare_output(
     nir_tensor_t *output, const size_t *shape, size_t ndim
 ) {
-    if (output == NULL || output->data == NULL || ndim > NIR_TENSOR_MAX_DIMS) {
+    if (output == NULL || output->data == NULL || ndim > NIR_TENSOR_MAX_DIMS ||
+        shape == NULL) {
         return 0;
     }
-    size_t size = 1;
-    for (size_t i = 0; i < ndim; i++) {
-        size *= shape[i];
-    }
+    size_t output_shape[NIR_TENSOR_MAX_DIMS] = {0};
+    for (size_t i = 0; i < ndim; i++) output_shape[i] = shape[i];
+    size_t size;
+    if (!shape_size(output_shape, ndim, &size)) return 0;
     if (output->capacity < size) {
         return 0;
     }
     output->ndim = ndim;
-    memset(output->shape, 0, sizeof(output->shape));
-    for (size_t i = 0; i < ndim; i++) {
-        output->shape[i] = shape[i];
-    }
+    memcpy(output->shape, output_shape, sizeof(output_shape));
     output->size = size;
     return 1;
 }
@@ -38,21 +107,27 @@ int nir_op_conv2d_into(
     const nir_conv2d_params_t *params, const nir_tensor_t *input,
     nir_tensor_t *output
 ) {
-    if (params == NULL || input == NULL || input->data == NULL ||
-        params->weight == NULL) {
+    if (params == NULL || !tensor_valid(input, 3) || params->weight == NULL ||
+        params->in_channels != input->shape[0] || params->out_channels == 0 ||
+        params->in_channels == 0) {
         return 0;
     }
+    size_t weight_count;
+    if (!checked_mul(params->out_channels, params->in_channels, &weight_count) ||
+        !checked_mul(weight_count, params->kernel_h, &weight_count) ||
+        !checked_mul(weight_count, params->kernel_w, &weight_count) ||
+        weight_count > SIZE_MAX / sizeof(float)) return 0;
     size_t in_h = input->shape[1], in_w = input->shape[2];
-    size_t out_h = conv_out_dim(
+    size_t out_h, out_w;
+    if (!conv_out_dim(
         in_h, params->padding_h, params->dilation_h,
-        (int)params->kernel_h, params->stride_h
-    );
-    size_t out_w = conv_out_dim(
+        params->kernel_h, params->stride_h, &out_h) ||
+        !conv_out_dim(
         in_w, params->padding_w, params->dilation_w,
-        (int)params->kernel_w, params->stride_w
-    );
+        params->kernel_w, params->stride_w, &out_w)) return 0;
     size_t shape[3] = {params->out_channels, out_h, out_w};
-    if (!prepare_output(output, shape, 3)) {
+    if (output == input || overlaps_output_shape(input, output, shape, 3) ||
+        !prepare_output(output, shape, 3)) {
         return 0;
     }
 
@@ -103,15 +178,15 @@ nir_tensor_t nir_op_conv2d(
     const nir_conv2d_params_t *params, const nir_tensor_t *input
 ) {
     size_t shape[3] = {0, 0, 0};
-    if (params != NULL && input != NULL) {
+    if (params != NULL && tensor_valid(input, 3)) {
         shape[0] = params->out_channels;
-        shape[1] = conv_out_dim(
+        (void)conv_out_dim(
             input->shape[1], params->padding_h, params->dilation_h,
-            (int)params->kernel_h, params->stride_h
+            params->kernel_h, params->stride_h, &shape[1]
         );
-        shape[2] = conv_out_dim(
+        (void)conv_out_dim(
             input->shape[2], params->padding_w, params->dilation_w,
-            (int)params->kernel_w, params->stride_w
+            params->kernel_w, params->stride_w, &shape[2]
         );
     }
     nir_tensor_t output = nir_tensor_alloc(shape, 3);
@@ -126,12 +201,18 @@ int nir_op_affine_into(
     const nir_affine_params_t *params, const nir_tensor_t *input,
     nir_tensor_t *output
 ) {
-    if (params == NULL || input == NULL || input->data == NULL ||
-        params->weight == NULL || params->bias == NULL) {
+    if (params == NULL || !tensor_valid(input, 1) ||
+        input->size != params->in_features || params->weight == NULL ||
+        params->bias == NULL) {
         return 0;
     }
+    size_t weight_count;
+    if (!checked_mul(params->out_features, params->in_features, &weight_count) ||
+        weight_count > SIZE_MAX / sizeof(float) ||
+        params->out_features > SIZE_MAX / sizeof(float)) return 0;
     size_t shape[1] = {params->out_features};
-    if (!prepare_output(output, shape, 1)) {
+    if (output == input || overlaps_output_shape(input, output, shape, 1) ||
+        !prepare_output(output, shape, 1)) {
         return 0;
     }
     for (size_t o = 0; o < params->out_features; o++) {
@@ -148,6 +229,7 @@ int nir_op_affine_into(
 nir_tensor_t nir_op_affine(
     const nir_affine_params_t *params, const nir_tensor_t *input
 ) {
+    if (params == NULL) return (nir_tensor_t){0};
     size_t shape[1] = {params->out_features};
     nir_tensor_t output = nir_tensor_alloc(shape, 1);
     if (output.data != NULL &&
@@ -158,19 +240,20 @@ nir_tensor_t nir_op_affine(
 }
 
 int nir_op_flatten_into(const nir_tensor_t *input, nir_tensor_t *output) {
-    if (input == NULL || input->data == NULL) {
+    if (!tensor_valid(input, input != NULL ? input->ndim : 0)) {
         return 0;
     }
     size_t shape[1] = {input->size};
     if (!prepare_output(output, shape, 1)) {
         return 0;
     }
-    memcpy(output->data, input->data, input->size * sizeof(float));
+    memmove(output->data, input->data, input->size * sizeof(float));
     return 1;
 }
 
 nir_tensor_t nir_op_flatten(const nir_tensor_t *input) {
-    size_t shape[1] = {input != NULL ? input->size : 0};
+    if (input == NULL) return (nir_tensor_t){0};
+    size_t shape[1] = {input->size};
     nir_tensor_t output = nir_tensor_alloc(shape, 1);
     if (output.data != NULL && !nir_op_flatten_into(input, &output)) {
         nir_tensor_free(&output);
@@ -182,24 +265,29 @@ static int pool2d_into(
     const nir_pool2d_params_t *params, const nir_tensor_t *input, float scale,
     nir_tensor_t *output
 ) {
-    if (params == NULL || input == NULL || input->data == NULL) {
+    if (params == NULL || !tensor_valid(input, 3) || params->kernel_h <= 0 ||
+        params->kernel_w <= 0 || params->stride_h <= 0 ||
+        params->stride_w <= 0 || params->padding_h < 0 ||
+        params->padding_w < 0) {
         return 0;
     }
     size_t channels = input->shape[0], in_h = input->shape[1],
            in_w = input->shape[2];
-    size_t out_h = (size_t)(
-        ((long)in_h + 2L * params->padding_h - params->kernel_h)
-            / params->stride_h + 1
-    );
-    size_t out_w = (size_t)(
-        ((long)in_w + 2L * params->padding_w - params->kernel_w)
-            / params->stride_w + 1
-    );
+    if (!fits_padded_long(in_h, params->padding_h) ||
+        !fits_padded_long(in_w, params->padding_w)) return 0;
+    long long nh = (long long)in_h + 2LL * params->padding_h -
+        params->kernel_h;
+    long long nw = (long long)in_w + 2LL * params->padding_w -
+        params->kernel_w;
+    if (nh < 0 || nw < 0) return 0;
+    size_t out_h = (size_t)(nh / params->stride_h + 1);
+    size_t out_w = (size_t)(nw / params->stride_w + 1);
     size_t shape[3] = {channels, out_h, out_w};
-    if (!prepare_output(output, shape, 3)) {
+    if (output == input || overlaps_output_shape(input, output, shape, 3) ||
+        !prepare_output(output, shape, 3)) {
         return 0;
     }
-    float area = (float)(params->kernel_h * params->kernel_w);
+    float area = (float)params->kernel_h * (float)params->kernel_w;
 
     for (size_t c = 0; c < channels; c++) {
         for (size_t oh = 0; oh < out_h; oh++) {
@@ -230,14 +318,17 @@ nir_tensor_t nir_op_avgpool2d(
     const nir_pool2d_params_t *params, const nir_tensor_t *input
 ) {
     size_t shape[3] = {0, 0, 0};
-    if (params != NULL && input != NULL) {
+    if (params != NULL && tensor_valid(input, 3) && params->stride_h > 0 &&
+        params->stride_w > 0 && params->kernel_h > 0 && params->kernel_w > 0 &&
+        fits_padded_long(input->shape[1], params->padding_h) &&
+        fits_padded_long(input->shape[2], params->padding_w)) {
         shape[0] = input->shape[0];
-        shape[1] = (size_t)(((long)input->shape[1] +
-            2L * params->padding_h - params->kernel_h) /
-            params->stride_h + 1);
-        shape[2] = (size_t)(((long)input->shape[2] +
-            2L * params->padding_w - params->kernel_w) /
-            params->stride_w + 1);
+        long long nh = (long long)input->shape[1] + 2LL * params->padding_h - params->kernel_h;
+        long long nw = (long long)input->shape[2] + 2LL * params->padding_w - params->kernel_w;
+        if (nh >= 0 && nw >= 0) {
+            shape[1] = (size_t)(nh / params->stride_h + 1);
+            shape[2] = (size_t)(nw / params->stride_w + 1);
+        }
     }
     nir_tensor_t output = nir_tensor_alloc(shape, 3);
     if (output.data != NULL &&
@@ -258,14 +349,17 @@ nir_tensor_t nir_op_sumpool2d(
     const nir_pool2d_params_t *params, const nir_tensor_t *input
 ) {
     size_t shape[3] = {0, 0, 0};
-    if (params != NULL && input != NULL) {
+    if (params != NULL && tensor_valid(input, 3) && params->stride_h > 0 &&
+        params->stride_w > 0 && params->kernel_h > 0 && params->kernel_w > 0 &&
+        fits_padded_long(input->shape[1], params->padding_h) &&
+        fits_padded_long(input->shape[2], params->padding_w)) {
         shape[0] = input->shape[0];
-        shape[1] = (size_t)(((long)input->shape[1] +
-            2L * params->padding_h - params->kernel_h) /
-            params->stride_h + 1);
-        shape[2] = (size_t)(((long)input->shape[2] +
-            2L * params->padding_w - params->kernel_w) /
-            params->stride_w + 1);
+        long long nh = (long long)input->shape[1] + 2LL * params->padding_h - params->kernel_h;
+        long long nw = (long long)input->shape[2] + 2LL * params->padding_w - params->kernel_w;
+        if (nh >= 0 && nw >= 0) {
+            shape[1] = (size_t)(nh / params->stride_h + 1);
+            shape[2] = (size_t)(nw / params->stride_w + 1);
+        }
     }
     nir_tensor_t output = nir_tensor_alloc(shape, 3);
     if (output.data != NULL &&
@@ -282,7 +376,8 @@ int nir_op_sumpool2d_into(
     if (params == NULL) {
         return 0;
     }
-    float area = (float)(params->kernel_h * params->kernel_w);
+    if (params->kernel_h <= 0 || params->kernel_w <= 0) return 0;
+    float area = (float)params->kernel_h * (float)params->kernel_w;
     return pool2d_into(params, input, area, output);
 }
 
@@ -292,11 +387,15 @@ int nir_op_li_into(
     const nir_tensor_t *v_prev,
     nir_tensor_t *output
 ) {
-    if (params == NULL || input == NULL || input->data == NULL ||
-        params->tau <= 0.0f) {
+    if (params == NULL || !tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        params->tau <= 0.0f || !isfinite(params->tau) ||
+        (v_prev != NULL && !tensor_valid(v_prev, input->ndim)) ||
+        (v_prev != NULL && !tensor_same_shape(v_prev, input))) {
         return 0;
     }
-    if (!prepare_output(output, input->shape, input->ndim)) {
+    if (!prepare_output(output, input->shape, input->ndim) ||
+        tensors_partially_overlap(input, output) ||
+        (v_prev != NULL && tensors_partially_overlap(v_prev, output))) {
         return 0;
     }
     float decay = expf(-1.0f / params->tau);
@@ -314,6 +413,7 @@ nir_tensor_t nir_op_li(
     const nir_tensor_t *input,
     const nir_tensor_t *v_prev
 ) {
+    if (input == NULL) return (nir_tensor_t){0};
     nir_tensor_t output = nir_tensor_alloc(input->shape, input->ndim);
     if (output.data != NULL && !nir_op_li_into(
             params, input, v_prev, &output)) {
@@ -326,8 +426,9 @@ int nir_op_threshold_into(
     const nir_threshold_params_t *params, const nir_tensor_t *input,
     nir_tensor_t *output
 ) {
-    if (params == NULL || input == NULL || input->data == NULL ||
-        !prepare_output(output, input->shape, input->ndim)) {
+    if (params == NULL || !tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        !prepare_output(output, input->shape, input->ndim) ||
+        tensors_partially_overlap(input, output)) {
         return 0;
     }
     for (size_t i = 0; i < input->size; i++) {
@@ -339,6 +440,7 @@ int nir_op_threshold_into(
 nir_tensor_t nir_op_threshold(
     const nir_threshold_params_t *params, const nir_tensor_t *input
 ) {
+    if (input == NULL) return (nir_tensor_t){0};
     nir_tensor_t output = nir_tensor_alloc(input->shape, input->ndim);
     if (output.data != NULL && !nir_op_threshold_into(
             params, input, &output)) {
@@ -351,8 +453,9 @@ int nir_op_scale_into(
     const nir_scale_params_t *params, const nir_tensor_t *input,
     nir_tensor_t *output
 ) {
-    if (params == NULL || input == NULL || input->data == NULL ||
-        !prepare_output(output, input->shape, input->ndim)) {
+    if (params == NULL || !tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        !prepare_output(output, input->shape, input->ndim) ||
+        tensors_partially_overlap(input, output)) {
         return 0;
     }
     for (size_t i = 0; i < input->size; i++) {
@@ -364,6 +467,7 @@ int nir_op_scale_into(
 nir_tensor_t nir_op_scale(
     const nir_scale_params_t *params, const nir_tensor_t *input
 ) {
+    if (input == NULL) return (nir_tensor_t){0};
     nir_tensor_t output = nir_tensor_alloc(input->shape, input->ndim);
     if (output.data != NULL && !nir_op_scale_into(
             params, input, &output)) {
