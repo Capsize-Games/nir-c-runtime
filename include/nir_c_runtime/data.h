@@ -8,7 +8,9 @@
  * 1/255 and the Normalize is an identity -- so C decodes each
  * pixel as v / 255.0f. Multi-byte samples land in `nir_tensor_t`
  * frames (batch-1, one tensor per sample); batching stays the
- * caller's loop until the tensor ABI grows a batch axis.
+ * caller's loop with the mean-reduction convention in
+ * minibatch.h, which also records the #42 decision against a
+ * batch axis on the tensor ABI.
  */
 #ifndef NIR_C_RUNTIME_DATA_H
 #define NIR_C_RUNTIME_DATA_H

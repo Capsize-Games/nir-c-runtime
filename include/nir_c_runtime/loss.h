@@ -25,8 +25,8 @@
  *   count gradient -- until the BPTT tape (#39) owns that.
  *
  * Both keep the single-sample-first convention: 1-D vectors,
- * mean reduction for MSE, batch reduction left to the
- * mini-batch issue (#42).
+ * mean reduction for MSE, batch reduction via the mean
+ * convention in minibatch.h.
  */
 #ifndef NIR_C_RUNTIME_LOSS_H
 #define NIR_C_RUNTIME_LOSS_H
