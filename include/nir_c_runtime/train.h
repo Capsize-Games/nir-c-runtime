@@ -28,7 +28,8 @@ int nir_surrogate_from_name(
 /* Softmax cross-entropy for one logit vector, matching
  * torch.nn.functional.cross_entropy on a single sample: loss =
  * -log(softmax(logits)[target]), grad = softmax(logits) with
- * grad[target] -= 1. Batch reduction is the caller's job. */
+ * grad[target] -= 1. Batch reduction is the caller's loop with
+ * the mean convention in minibatch.h. */
 int nir_cross_entropy(
     const nir_tensor_t *logits, size_t target, float *loss,
     nir_tensor_t *grad
