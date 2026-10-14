@@ -18,6 +18,7 @@ add_library(nir_c_runtime
   src/runtime.c
   src/fixed_event.c
   src/train.c
+  src/stdp_graph.c
   src/rng.c
   src/encode.c
   src/data.c
