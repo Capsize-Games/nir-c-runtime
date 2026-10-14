@@ -26,6 +26,7 @@ add_library(nir_c_runtime
   src/encode.c
   src/data.c
   src/checkpoint.c
+  src/minibatch.c
 )
 target_include_directories(nir_c_runtime PUBLIC include)
 target_link_libraries(nir_c_runtime PUBLIC m)
