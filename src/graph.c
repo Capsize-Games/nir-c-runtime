@@ -1,19 +1,44 @@
 #include "nir_c_runtime/graph.h"
 
-#include <stdio.h>
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-static void set_error(char **error, const char *fmt, const char *arg) {
+/* The message is always data: copied verbatim, never interpreted
+ * as a printf format string. */
+static void set_error(char **error, const char *message) {
     if (error == NULL || *error != NULL) {
         return; /* keep the first error, or the caller doesn't want one */
     }
-    size_t length = strlen(fmt) + (arg != NULL ? strlen(arg) : 0) + 8;
+    size_t length = strlen(message) + 1;
     *error = (char *)malloc(length);
     if (*error != NULL) {
-        snprintf(*error, length, fmt, arg != NULL ? arg : "");
+        memcpy(*error, message, length);
+    }
+}
+
+/* Join a caller-supplied name into a message by concatenation, so the
+ * name can never act as a printf conversion. */
+static void set_error_arg(
+    char **error, const char *prefix, const char *arg, const char *suffix
+) {
+    if (error == NULL || *error != NULL) {
+        return; /* keep the first error, or the caller doesn't want one */
+    }
+    if (arg == NULL) {
+        arg = "";
+    }
+    size_t prefix_length = strlen(prefix);
+    size_t arg_length = strlen(arg);
+    size_t suffix_length = strlen(suffix);
+    *error = (char *)malloc(prefix_length + arg_length + suffix_length + 1);
+    if (*error != NULL) {
+        memcpy(*error, prefix, prefix_length);
+        memcpy(*error + prefix_length, arg, arg_length);
+        memcpy(
+            *error + prefix_length + arg_length, suffix, suffix_length + 1
+        );
     }
 }
 
@@ -281,7 +306,7 @@ static int load_conv2d(
     );
     if (p->weight == NULL || p->out_channels == 0 || p->in_channels == 0 ||
         p->kernel_h == 0 || p->kernel_w == 0) {
-        set_error(error, "Conv2d weight must be a nonempty rectangular 4D numeric array", NULL);
+        set_error(error, "Conv2d weight must be a nonempty rectangular 4D numeric array");
         return 0;
     }
     const json_value_t *bias = json_object_get(params, "bias");
@@ -290,8 +315,7 @@ static int load_conv2d(
         p->bias = parse_floats_1d(bias, &bias_count);
         if (p->bias == NULL || bias_count != p->out_channels) {
             set_error(error,
-                "Conv2d bias must contain one value per output channel",
-                NULL);
+                "Conv2d bias must contain one value per output channel");
             return 0;
         }
     } else {
@@ -312,7 +336,7 @@ static int load_conv2d(
         !pair_at(params, "padding", &p->padding_h, &p->padding_w) ||
         !pair_at(params, "dilation", &p->dilation_h, &p->dilation_w) ||
         p->dilation_h == 0 || p->dilation_w == 0) {
-        set_error(error, "Conv2d stride/dilation must be positive pairs and padding a nonnegative pair", NULL);
+        set_error(error, "Conv2d stride/dilation must be positive pairs and padding a nonnegative pair");
         return 0;
     }
     return 1;
@@ -336,7 +360,7 @@ static int load_conv1d(
     );
     if (p->weight == NULL || p->out_channels == 0 || p->in_channels == 0 ||
         p->kernel == 0) {
-        set_error(error, "Conv1d weight must be a nonempty rectangular 3D numeric array", NULL);
+        set_error(error, "Conv1d weight must be a nonempty rectangular 3D numeric array");
         return 0;
     }
     const json_value_t *bias = json_object_get(params, "bias");
@@ -345,8 +369,7 @@ static int load_conv1d(
         p->bias = parse_floats_1d(bias, &bias_count);
         if (p->bias == NULL || bias_count != p->out_channels) {
             set_error(error,
-                "Conv1d bias must contain one value per output channel",
-                NULL);
+                "Conv1d bias must contain one value per output channel");
             return 0;
         }
     } else {
@@ -354,23 +377,23 @@ static int load_conv1d(
     }
     const json_value_t *padding = json_object_get(params, "padding");
     if (padding != NULL && padding->type == JSON_STRING) {
-        set_error(error, "Conv1d padding must be an integer; \"same\" and \"valid\" padding are not supported", NULL);
+        set_error(error, "Conv1d padding must be an integer; \"same\" and \"valid\" padding are not supported");
         return 0;
     }
     int groups = 1;
     const json_value_t *groups_json = json_object_get(params, "groups");
     if (groups_json != NULL && !int_at(params, "groups", &groups)) {
-        set_error(error, "Conv1d groups must be a nonnegative integer", NULL);
+        set_error(error, "Conv1d groups must be a nonnegative integer");
         return 0;
     }
     if (groups != 1) {
-        set_error(error, "Conv1d groups must be 1; grouped convolution is not supported", NULL);
+        set_error(error, "Conv1d groups must be 1; grouped convolution is not supported");
         return 0;
     }
     if (!int_at(params, "stride", &p->stride) || p->stride == 0 ||
         !int_at(params, "padding", &p->padding) ||
         !int_at(params, "dilation", &p->dilation) || p->dilation == 0) {
-        set_error(error, "Conv1d stride/dilation must be positive integers and padding a nonnegative integer", NULL);
+        set_error(error, "Conv1d stride/dilation must be positive integers and padding a nonnegative integer");
         return 0;
     }
     return 1;
@@ -383,7 +406,7 @@ static int load_linear(
     const json_value_t *weight = json_object_get(params, "weight");
     p->weight = parse_floats_2d(weight, &p->out_features, &p->in_features);
     if (p->weight == NULL || p->out_features == 0 || p->in_features == 0) {
-        set_error(error, "Linear weight must be a nonempty rectangular 2D numeric array", NULL);
+        set_error(error, "Linear weight must be a nonempty rectangular 2D numeric array");
         return 0;
     }
     return 1;
@@ -396,14 +419,14 @@ static int load_affine(
     const json_value_t *weight = json_object_get(params, "weight");
     p->weight = parse_floats_2d(weight, &p->out_features, &p->in_features);
     if (p->weight == NULL || p->out_features == 0 || p->in_features == 0) {
-        set_error(error, "Affine weight must be a nonempty rectangular 2D numeric array", NULL);
+        set_error(error, "Affine weight must be a nonempty rectangular 2D numeric array");
         return 0;
     }
     size_t bias_count = 0;
     p->bias = parse_floats_1d(json_object_get(params, "bias"), &bias_count);
     if (p->bias == NULL || bias_count != p->out_features) {
         set_error(error,
-            "Affine bias must contain one value per output feature", NULL);
+            "Affine bias must contain one value per output feature");
         return 0;
     }
     return 1;
@@ -507,16 +530,16 @@ static int load_node(
         json_object_get(node_json, "kind")
     );
     if (name == NULL || name[0] == '\0' || kind_text == NULL) {
-        set_error(error, "node missing name or kind", NULL);
+        set_error(error, "node missing name or kind");
         return 0;
     }
     node->name = dup_string(name);
     if (node->name == NULL) {
-        set_error(error, "out of memory", NULL);
+        set_error(error, "out of memory");
         return 0;
     }
     if (!resolve_kind(kind_text, &node->kind)) {
-        set_error(error, "unsupported node kind: %s", kind_text);
+        set_error_arg(error, "unsupported node kind: ", kind_text, "");
         return 0;
     }
     const json_value_t *params = json_object_get(node_json, "params");
@@ -528,45 +551,45 @@ static int load_node(
         case NIR_NODE_AVGPOOL2D:
         case NIR_NODE_SUMPOOL2D:
             if (!load_pool2d(params, node)) {
-                set_error(error, "Pool2d kernel and stride must be positive pairs and padding a nonnegative pair", NULL);
+                set_error(error, "Pool2d kernel and stride must be positive pairs and padding a nonnegative pair");
                 return 0;
             }
             return 1;
         case NIR_NODE_LI:
             if (!load_li(params, node)) {
-                set_error(error, "LI tau must be positive and parameters finite numbers", NULL);
+                set_error(error, "LI tau must be positive and parameters finite numbers");
                 return 0;
             }
             return 1;
         case NIR_NODE_LIF:
             if (!load_lif(params, node)) {
-                set_error(error, "LIF tau must be positive and parameters finite numbers", NULL);
+                set_error(error, "LIF tau must be positive and parameters finite numbers");
                 return 0;
             }
             return 1;
         case NIR_NODE_IF:
             if (!load_if(params, node)) {
-                set_error(error, "IF parameters must be finite numbers", NULL);
+                set_error(error, "IF parameters must be finite numbers");
                 return 0;
             }
             return 1;
         case NIR_NODE_CUBALIF:
             if (!load_cuba(params, node)) {
-                set_error(error, "CubaLIF time constants must be positive and parameters finite numbers", NULL);
+                set_error(error, "CubaLIF time constants must be positive and parameters finite numbers");
                 return 0;
             }
             return 1;
         case NIR_NODE_THRESHOLD:
             if (!parameter_number(params, "threshold", 1.0f,
                                   &node->params.threshold.threshold)) {
-                set_error(error, "Threshold parameter must be a finite number", NULL);
+                set_error(error, "Threshold parameter must be a finite number");
                 return 0;
             }
             return 1;
         case NIR_NODE_SCALE:
             if (!parameter_number(params, "scale", 1.0f,
                                   &node->params.scale.scale)) {
-                set_error(error, "Scale parameter must be a finite number", NULL);
+                set_error(error, "Scale parameter must be a finite number");
                 return 0;
             }
             return 1;
@@ -576,7 +599,7 @@ static int load_node(
         case NIR_NODE_DELAY:
             return 1;
         default:
-            set_error(error, "unhandled node kind", NULL);
+            set_error(error, "unhandled node kind");
             return 0;
     }
 }
@@ -614,7 +637,7 @@ static int load_edges(
 ) {
     size_t count = json_array_length(edges_json);
     if (count > (size_t)-1 / sizeof(nir_edge_t)) {
-        set_error(error, "graph has too many edges", NULL);
+        set_error(error, "graph has too many edges");
         return 0;
     }
     graph->edges = (nir_edge_t *)malloc(
@@ -628,13 +651,13 @@ static int load_edges(
         const char *source = json_as_string(json_object_get(edge, "source"));
         const char *target = json_as_string(json_object_get(edge, "target"));
         if (source == NULL || target == NULL) {
-            set_error(error, "edge source and target must be strings", NULL);
+            set_error(error, "edge source and target must be strings");
             return 0;
         }
         size_t source_index = nir_graph_find(graph, source);
         size_t target_index = nir_graph_find(graph, target);
         if (source_index == (size_t)-1 || target_index == (size_t)-1) {
-            set_error(error, "edge references an unknown node", NULL);
+            set_error(error, "edge references an unknown node");
             return 0;
         }
         graph->edges[i].source_index = source_index;
@@ -649,7 +672,7 @@ int nir_graph_load(
 ) {
     if (error != NULL) *error = NULL;
     if (out == NULL) {
-        set_error(error, "graph output must not be null", NULL);
+        set_error(error, "graph output must not be null");
         return 0;
     }
     memset(out, 0, sizeof(*out));
@@ -657,23 +680,23 @@ int nir_graph_load(
     const json_value_t *edges_json = json_object_get(summary, "edges");
     if (nodes_json == NULL || nodes_json->type != JSON_ARRAY ||
         edges_json == NULL || edges_json->type != JSON_ARRAY) {
-        set_error(error, "graph JSON missing \"nodes\" or \"edges\"", NULL);
+        set_error(error, "graph JSON missing \"nodes\" or \"edges\"");
         return 0;
     }
     size_t node_count = json_array_length(nodes_json);
     if (node_count == 0) {
-        set_error(error, "graph must contain at least one node", NULL);
+        set_error(error, "graph must contain at least one node");
         return 0;
     }
     if (node_count > (size_t)-1 / sizeof(nir_node_t)) {
-        set_error(error, "graph has too many nodes", NULL);
+        set_error(error, "graph has too many nodes");
         return 0;
     }
     out->nodes = (nir_node_t *)calloc(
         node_count == 0 ? 1 : node_count, sizeof(nir_node_t)
     );
     if (out->nodes == NULL) {
-        set_error(error, "out of memory", NULL);
+        set_error(error, "out of memory");
         return 0;
     }
     out->node_count = node_count;
@@ -684,7 +707,9 @@ int nir_graph_load(
         }
         for (size_t previous = 0; previous < i; previous++) {
             if (strcmp(out->nodes[previous].name, out->nodes[i].name) == 0) {
-                set_error(error, "duplicate node name: %s", out->nodes[i].name);
+                set_error_arg(
+                    error, "duplicate node name: ", out->nodes[i].name, ""
+                );
                 nir_graph_free(out);
                 return 0;
             }
