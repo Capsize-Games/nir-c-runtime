@@ -328,9 +328,7 @@ static int load_conv2d(
         return 0;
     }
     if (groups != 1) {
-        set_error(
-            error, "Conv2d groups must be 1; grouped convolution is not supported"
-        );
+        set_error(error, "Conv2d groups must be 1; grouped convolution is not supported");
         return 0;
     }
     if (!pair_at(params, "stride", &p->stride_h, &p->stride_w) ||
