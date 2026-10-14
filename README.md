@@ -77,15 +77,36 @@ target-specific kernels remain future optimization work.
 - [x] C-side training math (`train.h`): named surrogate gradients
       (fast_sigmoid/atan, no silent default) with Threshold/LI/Affine/Linear
       backward ops, softmax cross-entropy, SGD/Adam optimizers over raw
-      weight buffers, and a local STDP rule. Dataset loading, RNG/encoding,
-      checkpoints, and a graph-level backprop-through-time tape remain
-      future work (see the training epic).
+      weight buffers, and a local STDP rule with a graph-bound adapter
+      (`stdp_graph.h`) that trains a loaded Affine/Linear node's weights
+      from recorded pre/post spikes.
+- [x] C-side training IO: seeded RNG (`rng.h`), rate/latency/delta
+      spike encoders (`encode.h`), IDX MNIST dataset loading (`data.h`),
+      and versioned checkpoint save/load with weight accessors and
+      summary export (`checkpoint.h`), all covered by C tests.
 
 ## Out of scope (for now)
 
-- Full training pipelines. The loss/optimizer/STDP primitives above are
-  supported; data loading, spike encoding, checkpointing, and graph-level
-  backprop-through-time are not built yet.
+- Full training pipelines. The training math and training IO above are
+  supported; still missing are the graph-level backprop-through-time tape
+  ([#39](https://github.com/Capsize-Games/nir-c-runtime/issues/39)),
+  backward ops for spatial/linear
+  ([#40](https://github.com/Capsize-Games/nir-c-runtime/issues/40)) and
+  spiking-neuron
+  ([#41](https://github.com/Capsize-Games/nir-c-runtime/issues/41)) nodes,
+  mini-batch training
+  ([#42](https://github.com/Capsize-Games/nir-c-runtime/issues/42)),
+  optimizer-state checkpoint resume
+  ([#43](https://github.com/Capsize-Games/nir-c-runtime/issues/43)), and an
+  end-to-end C training driver with a worked example
+  ([#44](https://github.com/Capsize-Games/nir-c-runtime/issues/44)).
+  Weight initializers
+  ([#45](https://github.com/Capsize-Games/nir-c-runtime/issues/45)),
+  learning-rate schedules
+  ([#46](https://github.com/Capsize-Games/nir-c-runtime/issues/46)), and
+  additional loss functions
+  ([#47](https://github.com/Capsize-Games/nir-c-runtime/issues/47)) are filed
+  as follow-ups.
 - General Curlee/JOE graph execution. The narrow, allocation-free event ABI is
   integrated as the reference path for
   [curlee#316](https://github.com/w4ffl35/curlee/issues/316); loading arbitrary
