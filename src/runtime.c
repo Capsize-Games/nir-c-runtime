@@ -106,7 +106,7 @@ int nir_runtime_init(
     }
     for (size_t i = 0; i < graph->node_count; i++) {
         if (graph->nodes[i].kind < NIR_NODE_INPUT ||
-            graph->nodes[i].kind > NIR_NODE_DELAY) {
+            graph->nodes[i].kind > NIR_NODE_LINEAR) {
             set_error(error, "runtime graph contains an invalid node kind", NULL);
             return 0;
         }
@@ -124,12 +124,16 @@ int nir_runtime_init(
         n == 0 ? 1 : n, sizeof(nir_tensor_t)
     );
     rt->li_primed = (int *)calloc(n == 0 ? 1 : n, sizeof(int));
+    rt->syn_state = (nir_tensor_t *)calloc(
+        n == 0 ? 1 : n, sizeof(nir_tensor_t)
+    );
     rt->delay_buffer = (nir_tensor_t *)calloc(
         n == 0 ? 1 : n, sizeof(nir_tensor_t)
     );
     rt->delay_primed = (int *)calloc(n == 0 ? 1 : n, sizeof(int));
     if (rt->order == NULL || rt->li_state == NULL || rt->li_primed == NULL ||
-        rt->delay_buffer == NULL || rt->delay_primed == NULL) {
+        rt->syn_state == NULL || rt->delay_buffer == NULL ||
+        rt->delay_primed == NULL) {
         nir_runtime_free(rt);
         set_error(error, "out of memory", NULL);
         return 0;
@@ -148,6 +152,7 @@ void nir_runtime_free(nir_runtime_t *rt) {
     if (rt->graph != NULL) {
         for (size_t i = 0; i < rt->graph->node_count; i++) {
             if (rt->li_state != NULL) nir_tensor_free(&rt->li_state[i]);
+            if (rt->syn_state != NULL) nir_tensor_free(&rt->syn_state[i]);
             if (rt->delay_buffer != NULL) {
                 nir_tensor_free(&rt->delay_buffer[i]);
             }
@@ -156,6 +161,7 @@ void nir_runtime_free(nir_runtime_t *rt) {
     free(rt->order);
     free(rt->li_state);
     free(rt->li_primed);
+    free(rt->syn_state);
     free(rt->delay_buffer);
     free(rt->delay_primed);
     memset(rt, 0, sizeof(*rt));
@@ -217,6 +223,13 @@ static int sum_incoming(
     return 1;
 }
 
+static nir_tensor_t alloc_like(const nir_tensor_t *input) {
+    if (input == NULL) {
+        return (nir_tensor_t){0};
+    }
+    return nir_tensor_alloc(input->shape, input->ndim);
+}
+
 static nir_tensor_t apply_node(
     const nir_node_t *node,
     const nir_tensor_t *input,
@@ -226,8 +239,12 @@ static nir_tensor_t apply_node(
     switch (node->kind) {
         case NIR_NODE_CONV2D:
             return nir_op_conv2d(&node->params.conv2d, input);
+        case NIR_NODE_CONV1D:
+            return nir_op_conv1d(&node->params.conv1d, input);
         case NIR_NODE_AFFINE:
             return nir_op_affine(&node->params.affine, input);
+        case NIR_NODE_LINEAR:
+            return nir_op_linear(&node->params.linear, input);
         case NIR_NODE_FLATTEN:
             return nir_op_flatten(input);
         case NIR_NODE_AVGPOOL2D:
@@ -252,6 +269,58 @@ static nir_tensor_t apply_node(
             rt->li_state[index] = next_state;
             rt->li_primed[index] = 1;
             return membrane;
+        }
+        case NIR_NODE_LIF:
+        case NIR_NODE_IF: {
+            const nir_tensor_t *prev =
+                rt->li_primed[index] ? &rt->li_state[index] : NULL;
+            nir_tensor_t spike = alloc_like(input);
+            nir_tensor_t stored = alloc_like(input);
+            int ok = spike.data != NULL && stored.data != NULL;
+            if (ok && node->kind == NIR_NODE_LIF) {
+                ok = nir_op_lif_into(
+                    &node->params.lif, input, prev, &spike, &stored
+                );
+            } else if (ok) {
+                ok = nir_op_if_into(
+                    &node->params.if_, input, prev, &spike, &stored
+                );
+            }
+            if (!ok) {
+                nir_tensor_free(&spike);
+                nir_tensor_free(&stored);
+                return (nir_tensor_t){0};
+            }
+            nir_tensor_free(&rt->li_state[index]);
+            rt->li_state[index] = stored;
+            rt->li_primed[index] = 1;
+            return spike;
+        }
+        case NIR_NODE_CUBALIF: {
+            const nir_tensor_t *syn_prev =
+                rt->li_primed[index] ? &rt->syn_state[index] : NULL;
+            const nir_tensor_t *mem_prev =
+                rt->li_primed[index] ? &rt->li_state[index] : NULL;
+            nir_tensor_t spike = alloc_like(input);
+            nir_tensor_t syn = alloc_like(input);
+            nir_tensor_t stored = alloc_like(input);
+            int ok = spike.data != NULL && syn.data != NULL &&
+                stored.data != NULL && nir_op_cuba_into(
+                    &node->params.cuba, input, syn_prev, mem_prev,
+                    &spike, &syn, &stored
+                );
+            if (!ok) {
+                nir_tensor_free(&spike);
+                nir_tensor_free(&syn);
+                nir_tensor_free(&stored);
+                return (nir_tensor_t){0};
+            }
+            nir_tensor_free(&rt->syn_state[index]);
+            nir_tensor_free(&rt->li_state[index]);
+            rt->syn_state[index] = syn;
+            rt->li_state[index] = stored;
+            rt->li_primed[index] = 1;
+            return spike;
         }
         case NIR_NODE_THRESHOLD:
             return nir_op_threshold(&node->params.threshold, input);
@@ -321,6 +390,15 @@ static int run_step(
     return 1;
 }
 
+static int graph_has_cuba(const nir_graph_t *graph) {
+    for (size_t i = 0; i < graph->node_count; i++) {
+        if (graph->nodes[i].kind == NIR_NODE_CUBALIF) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int workspace_ready(
     const nir_runtime_t *rt, const nir_runtime_workspace_t *workspace,
     const nir_tensor_t *readout_out, char **error
@@ -332,7 +410,8 @@ static int workspace_ready(
         workspace->delay_primed == NULL || workspace->sum == NULL ||
         workspace->total == NULL || readout_out == NULL ||
         workspace->sum->data == NULL || workspace->total->data == NULL ||
-        readout_out->data == NULL) {
+        readout_out->data == NULL ||
+        (graph_has_cuba(rt->graph) && workspace->syn_state == NULL)) {
         set_error(error, "incomplete runtime workspace", NULL);
         return 0;
     }
@@ -405,8 +484,14 @@ static int apply_node_workspace(
         case NIR_NODE_CONV2D:
             ok = nir_op_conv2d_into(&node->params.conv2d, input, output);
             break;
+        case NIR_NODE_CONV1D:
+            ok = nir_op_conv1d_into(&node->params.conv1d, input, output);
+            break;
         case NIR_NODE_AFFINE:
             ok = nir_op_affine_into(&node->params.affine, input, output);
+            break;
+        case NIR_NODE_LINEAR:
+            ok = nir_op_linear_into(&node->params.linear, input, output);
             break;
         case NIR_NODE_FLATTEN:
             ok = nir_op_flatten_into(input, output);
@@ -432,6 +517,43 @@ static int apply_node_workspace(
                 workspace->li_primed[index] = 1;
             }
             break;
+        case NIR_NODE_LIF:
+        case NIR_NODE_IF: {
+            const nir_tensor_t *prev = workspace->li_primed[index] ?
+                &workspace->li_state[index] : NULL;
+            /* The stored membrane lands directly in the state slot;
+             * exact-aliasing the previous state is safe (elementwise)
+             * and needs no copy, unlike LI above. */
+            if (node->kind == NIR_NODE_LIF) {
+                ok = nir_op_lif_into(
+                    &node->params.lif, input, prev, output,
+                    &workspace->li_state[index]
+                );
+            } else {
+                ok = nir_op_if_into(
+                    &node->params.if_, input, prev, output,
+                    &workspace->li_state[index]
+                );
+            }
+            if (ok) {
+                workspace->li_primed[index] = 1;
+            }
+            break;
+        }
+        case NIR_NODE_CUBALIF: {
+            const nir_tensor_t *syn_prev = workspace->li_primed[index] ?
+                &workspace->syn_state[index] : NULL;
+            const nir_tensor_t *mem_prev = workspace->li_primed[index] ?
+                &workspace->li_state[index] : NULL;
+            ok = nir_op_cuba_into(
+                &node->params.cuba, input, syn_prev, mem_prev, output,
+                &workspace->syn_state[index], &workspace->li_state[index]
+            );
+            if (ok) {
+                workspace->li_primed[index] = 1;
+            }
+            break;
+        }
         case NIR_NODE_THRESHOLD:
             ok = nir_op_threshold_into(
                 &node->params.threshold, input, output

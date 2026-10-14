@@ -126,6 +126,189 @@ static void test_flatten_preserves_data_order(void) {
     nir_tensor_free(&output);
 }
 
+static void test_linear_has_no_bias(void) {
+    /* y = [[1,2],[3,4]] @ [1,1] = [3,7] */
+    float weight[4] = {1, 2, 3, 4};
+    nir_linear_params_t params = {2, 2, weight};
+    size_t shape[1] = {2};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    input.data[0] = 1;
+    input.data[1] = 1;
+
+    nir_tensor_t output = nir_op_linear(&params, &input);
+    CHECK(output.ndim == 1 && output.size == 2);
+    CHECK_NEAR(output.data[0], 3.0, 1e-6);
+    CHECK_NEAR(output.data[1], 7.0, 1e-6);
+
+    nir_tensor_free(&input);
+    nir_tensor_free(&output);
+}
+
+static void test_conv1d_matches_hand_computation(void) {
+    /* x=[1,2,3,4], w=[1,0,-1], pad=1: out[i]=x[i-1]-x[i+1]. */
+    float weight[3] = {1.0f, 0.0f, -1.0f};
+    float bias[1] = {0.5f};
+    nir_conv1d_params_t params = {1, 1, 3, weight, bias, 1, 1, 1};
+    size_t shape[2] = {1, 4};
+    nir_tensor_t input = nir_tensor_alloc(shape, 2);
+    for (size_t i = 0; i < 4; i++) input.data[i] = (float)(i + 1);
+
+    nir_tensor_t output = nir_op_conv1d(&params, &input);
+    CHECK(output.ndim == 2 && output.shape[0] == 1 && output.shape[1] == 4);
+    double want[4] = {-1.5, -1.5, -1.5, 3.5};
+    for (size_t i = 0; i < 4; i++) {
+        CHECK_NEAR(output.data[i], want[i], 1e-6);
+    }
+    nir_tensor_free(&output);
+
+    /* Stride 2, no padding: x=[1,2,3,4], w=[1,1] -> [3,7]. */
+    float stride_weight[2] = {1.0f, 1.0f};
+    nir_conv1d_params_t strided = {1, 1, 2, stride_weight, NULL, 2, 0, 1};
+    output = nir_op_conv1d(&strided, &input);
+    CHECK(output.shape[0] == 1 && output.shape[1] == 2);
+    CHECK_NEAR(output.data[0], 3.0, 1e-6);
+    CHECK_NEAR(output.data[1], 7.0, 1e-6);
+
+    nir_tensor_free(&input);
+    nir_tensor_free(&output);
+}
+
+static void test_lif_integrates_then_resets(void) {
+    nir_lif_params_t params = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    size_t shape[1] = {1};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    nir_tensor_t spike = nir_tensor_alloc(shape, 1);
+    nir_tensor_t stored = nir_tensor_alloc(shape, 1);
+    double decay = exp(-1.0);
+
+    /* First step from rest: membrane (1-decay) stays below threshold. */
+    input.data[0] = 1.0f;
+    CHECK(nir_op_lif_into(&params, &input, NULL, &spike, &stored));
+    double membrane = 1.0 - decay;
+    CHECK_NEAR(spike.data[0], 0.0, 1e-9);
+    CHECK_NEAR(stored.data[0], membrane, 1e-6);
+
+    /* Stronger drive crosses threshold: spike out, reset stored. */
+    input.data[0] = 2.0f;
+    CHECK(nir_op_lif_into(&params, &input, &stored, &spike, &stored));
+    membrane = decay * membrane + (1.0 - decay) * 2.0;
+    CHECK(membrane > 1.0);
+    CHECK_NEAR(spike.data[0], 1.0, 1e-9);
+    CHECK_NEAR(stored.data[0], 0.0, 1e-9);
+
+    nir_tensor_free(&input);
+    nir_tensor_free(&spike);
+    nir_tensor_free(&stored);
+}
+
+static void test_if_has_no_leak(void) {
+    nir_if_params_t params = {2.0f, 2.0f, 0.5f};
+    size_t shape[1] = {1};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    nir_tensor_t spike = nir_tensor_alloc(shape, 1);
+    nir_tensor_t stored = nir_tensor_alloc(shape, 1);
+
+    /* 0 + 2*1 = 2 equals the threshold: strict, so no spike. */
+    input.data[0] = 1.0f;
+    CHECK(nir_op_if_into(&params, &input, NULL, &spike, &stored));
+    CHECK_NEAR(spike.data[0], 0.0, 1e-9);
+    CHECK_NEAR(stored.data[0], 2.0, 1e-9);
+
+    /* 2 + 2*0.5 = 3 crosses: spike out, v_reset stored. */
+    input.data[0] = 0.5f;
+    CHECK(nir_op_if_into(&params, &input, &stored, &spike, &stored));
+    CHECK_NEAR(spike.data[0], 1.0, 1e-9);
+    CHECK_NEAR(stored.data[0], 0.5, 1e-9);
+
+    nir_tensor_free(&input);
+    nir_tensor_free(&spike);
+    nir_tensor_free(&stored);
+}
+
+static void test_cuba_integrates_two_states(void) {
+    nir_cuba_params_t params = {1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f};
+    size_t shape[1] = {1};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    nir_tensor_t spike = nir_tensor_alloc(shape, 1);
+    nir_tensor_t syn = nir_tensor_alloc(shape, 1);
+    nir_tensor_t stored = nir_tensor_alloc(shape, 1);
+    double decay = exp(-1.0);
+
+    /* From rest with x=1: syn=(1-decay), mem=(1-decay)*syn. */
+    input.data[0] = 1.0f;
+    CHECK(nir_op_cuba_into(
+        &params, &input, NULL, NULL, &spike, &syn, &stored
+    ));
+    double syn_want = 1.0 - decay;
+    double mem_want = (1.0 - decay) * syn_want;
+    CHECK_NEAR(syn.data[0], syn_want, 1e-6);
+    CHECK_NEAR(spike.data[0], 0.0, 1e-9);
+    CHECK_NEAR(stored.data[0], mem_want, 1e-6);
+
+    /* With x=0 both states decay without spiking. */
+    input.data[0] = 0.0f;
+    CHECK(nir_op_cuba_into(
+        &params, &input, &syn, &stored, &spike, &syn, &stored
+    ));
+    syn_want = decay * syn_want;
+    mem_want = decay * mem_want + (1.0 - decay) * syn_want;
+    CHECK_NEAR(syn.data[0], syn_want, 1e-6);
+    CHECK_NEAR(spike.data[0], 0.0, 1e-9);
+    CHECK_NEAR(stored.data[0], mem_want, 1e-6);
+
+    nir_tensor_free(&input);
+    nir_tensor_free(&spike);
+    nir_tensor_free(&syn);
+    nir_tensor_free(&stored);
+}
+
+static void test_spiking_ops_reject_bad_geometry(void) {
+    size_t shape[1] = {2};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    nir_tensor_t spike = nir_tensor_alloc(shape, 1);
+    nir_tensor_t stored = nir_tensor_alloc(shape, 1);
+    nir_lif_params_t lif = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+
+    /* The two outputs must not alias each other, even exactly. */
+    CHECK(!nir_op_lif_into(&lif, &input, NULL, &spike, &spike));
+    nir_tensor_t aliased = {0};
+    CHECK(nir_tensor_bind(&aliased, spike.data, 2, shape, 1));
+    CHECK(!nir_op_lif_into(&lif, &input, NULL, &spike, &aliased));
+
+    /* A nonpositive tau is rejected. */
+    nir_lif_params_t bad_tau = {0.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    CHECK(!nir_op_lif_into(&bad_tau, &input, NULL, &spike, &stored));
+
+    /* Mismatched previous state is rejected. */
+    size_t one[1] = {1};
+    nir_tensor_t short_prev = nir_tensor_alloc(one, 1);
+    CHECK(!nir_op_lif_into(&lif, &input, &short_prev, &spike, &stored));
+
+    /* NULL inputs fail cleanly. */
+    CHECK(!nir_op_lif_into(&lif, NULL, NULL, &spike, &stored));
+    nir_if_params_t if_ = {1.0f, 1.0f, 0.0f};
+    CHECK(!nir_op_if_into(&if_, NULL, NULL, &spike, &stored));
+    nir_tensor_t syn = nir_tensor_alloc(shape, 1);
+    nir_cuba_params_t cuba = {1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f};
+    CHECK(!nir_op_cuba_into(
+        &cuba, NULL, NULL, NULL, &spike, &syn, &stored
+    ));
+    /* Split synaptic/membrane state is rejected: they prime together. */
+    CHECK(!nir_op_cuba_into(
+        &cuba, &input, NULL, &stored, &spike, &syn, &stored
+    ));
+    CHECK(!nir_op_cuba_into(
+        &cuba, &input, &syn, NULL, &spike, &syn, &stored
+    ));
+
+    nir_tensor_free(&short_prev);
+    nir_tensor_free(&aliased);
+    nir_tensor_free(&syn);
+    nir_tensor_free(&input);
+    nir_tensor_free(&spike);
+    nir_tensor_free(&stored);
+}
+
 static void test_ops_reject_malformed_shapes_and_geometry(void) {
     float data[4] = {1, 2, 3, 4};
     size_t wrong_shape[2] = {2, 2};
@@ -170,6 +353,10 @@ static void test_ops_reject_aliasing_and_mismatched_state(void) {
 
 static void test_convenience_ops_accept_null_inputs_safely(void) {
     nir_tensor_t out = nir_op_affine(NULL, NULL);
+    CHECK(out.data == NULL);
+    out = nir_op_linear(NULL, NULL);
+    CHECK(out.data == NULL);
+    out = nir_op_conv1d(NULL, NULL);
     CHECK(out.data == NULL);
     out = nir_op_flatten(NULL);
     CHECK(out.data == NULL);
@@ -238,6 +425,12 @@ int main(void) {
     test_conv2d_identity_kernel();
     test_avgpool_and_sumpool_relationship();
     test_flatten_preserves_data_order();
+    test_linear_has_no_bias();
+    test_conv1d_matches_hand_computation();
+    test_lif_integrates_then_resets();
+    test_if_has_no_leak();
+    test_cuba_integrates_two_states();
+    test_spiking_ops_reject_bad_geometry();
     test_ops_reject_malformed_shapes_and_geometry();
     test_ops_reject_aliasing_and_mismatched_state();
     test_convenience_ops_accept_null_inputs_safely();
