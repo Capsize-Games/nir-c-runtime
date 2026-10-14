@@ -227,4 +227,125 @@ int nir_op_linear_backward(
     nir_tensor_t *grad_input
 );
 
+/* Backward through Conv2d: grad_input via transposed convolution
+ * (zero-filled, then each grad_output element scattered back
+ * through the kernel), grad_weight += the input-window outer sums,
+ * grad_bias += grad_output summed over spatial positions.
+ * grad_weight is a flat [out*in*kernel_h*kernel_w] vector in the
+ * same linear order as params->weight (a 4D shape would exceed
+ * NIR_TENSOR_MAX_DIMS). Weight and bias gradients accumulate (the
+ * caller zeroes them); grad_input is overwritten. grad_bias may be
+ * NULL iff the node has no bias. All three outputs must be
+ * disjoint from the inputs and from each other. */
+int nir_op_conv2d_backward(
+    const nir_conv2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+);
+
+/* Backward through Conv1d: as above in one spatial dimension, with
+ * grad_weight a flat [out*in*kernel] vector. */
+int nir_op_conv1d_backward(
+    const nir_conv1d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+);
+
+/* Backward through Flatten: copy the flat gradient back into the
+ * retained input's shape (grad_input takes input's shape). Only
+ * shapes are read from `input`. Overlap-safe through a move-safe
+ * copy, like the forward. */
+int nir_op_flatten_backward(
+    const nir_tensor_t *input, const nir_tensor_t *grad_output,
+    nir_tensor_t *grad_input
+);
+
+/* Backward through AvgPool2d (count-include-pad): grad_input is
+ * zero-filled to the retained input's shape, then each
+ * grad_output element is scattered as grad/area over its window
+ * (padded cells receive nothing, and the divisor stays the full
+ * window area, matching the forward). grad_input is overwritten
+ * and must be disjoint from the inputs. */
+int nir_op_avgpool2d_backward(
+    const nir_pool2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_input
+);
+
+/* Backward through SumPool2d: as above with unit weight per
+ * window cell. */
+int nir_op_sumpool2d_backward(
+    const nir_pool2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_input
+);
+
+/* Backward through Scale: grad_input = grad_output * scale,
+ * following the elementwise aliasing rule. The node's scale is a
+ * fixed graph constant, so the scale gradient is opt-in: when
+ * grad_scale is non-NULL, *grad_scale += sum(grad_output * input)
+ * (accumulating, mirroring affine_backward) and `input` must be a
+ * valid same-shape tensor; when grad_scale is NULL, `input` may be
+ * NULL and only grad_input is written. */
+int nir_op_scale_backward(
+    const nir_scale_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_input,
+    float *grad_scale
+);
+
+/* Spiking-neuron backward convention (LIF/IF/CubaLIF). The forward
+ * hard reset (stored = spike ? v_reset : membrane) carries ZERO
+ * gradient: grad_stored is accepted for tape wiring but
+ * contributes nothing, so no gradient flows through the reset
+ * branch. The learning signal flows through the spike output with
+ * a surrogate derivative, d(spike)/d(membrane) =
+ * surr(membrane - v_threshold), mirroring snnTorch's
+ * straight-through spike gradient (the same fast_sigmoid/atan
+ * derivatives as nir_surrogate_grad). This truncates BPTT through
+ * the stored membrane across steps: within one step, only the
+ * spike path carries credit to the input and previous state. The
+ * membrane feeding the surrogate is recomputed from the retained
+ * input and previous state, so the tape retains those rather than
+ * a pre-reset membrane the forward never outputs. */
+
+/* Backward through one LIF step: with decay = exp(-1 / tau) and
+ * g = grad_spike * surr(membrane - v_threshold), grad_input = g *
+ * r * (1 - decay) and grad_prev = g * decay. `v_prev` may be NULL
+ * (treated as zeros, matching the forward); `grad_stored` may be
+ * NULL (when non-NULL it must match the input shape and is
+ * ignored per the reset convention above); `grad_prev` may be
+ * NULL when the previous-state gradient is unneeded. Outputs
+ * follow the elementwise rule against grad_spike and the retained
+ * tensors, and must not overlap each other. */
+int nir_op_lif_backward(
+    const nir_lif_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev, const nir_tensor_t *grad_spike,
+    const nir_tensor_t *grad_stored, nir_surrogate_kind_t surrogate,
+    float slope, nir_tensor_t *grad_input, nir_tensor_t *grad_prev
+);
+
+/* Backward through one IF step: with membrane = v_prev + r *
+ * input and g as above, grad_input = g * r and grad_prev = g.
+ * Retention and aliasing conventions match lif_backward. */
+int nir_op_if_backward(
+    const nir_if_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev, const nir_tensor_t *grad_spike,
+    const nir_tensor_t *grad_stored, nir_surrogate_kind_t surrogate,
+    float slope, nir_tensor_t *grad_input, nir_tensor_t *grad_prev
+);
+
+/* Backward through one CubaLIF step: with g as above,
+ * d(syn) = g * r * (1 - mem_decay), grad_mem_prev = g *
+ * mem_decay, grad_input = d(syn) * w_in * (1 - syn_decay), and
+ * grad_syn_prev = d(syn) * syn_decay. `syn_prev`/`mem_prev` prime
+ * together (both NULL or both valid, matching the forward);
+ * `grad_stored` follows the reset convention above; either state
+ * gradient may be NULL when unneeded. */
+int nir_op_cuba_backward(
+    const nir_cuba_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *syn_prev, const nir_tensor_t *mem_prev,
+    const nir_tensor_t *grad_spike, const nir_tensor_t *grad_stored,
+    nir_surrogate_kind_t surrogate, float slope,
+    nir_tensor_t *grad_input, nir_tensor_t *grad_syn_prev,
+    nir_tensor_t *grad_mem_prev
+);
+
 #endif /* NIR_C_RUNTIME_OPS_H */
