@@ -17,6 +17,7 @@ add_library(nir_c_runtime
   src/ops.c
   src/runtime.c
   src/fixed_event.c
+  src/train.c
 )
 target_include_directories(nir_c_runtime PUBLIC include)
 target_link_libraries(nir_c_runtime PUBLIC m)
