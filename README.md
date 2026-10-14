@@ -84,29 +84,70 @@ target-specific kernels remain future optimization work.
       spike encoders (`encode.h`), IDX MNIST dataset loading (`data.h`),
       and versioned checkpoint save/load with weight accessors and
       summary export (`checkpoint.h`), all covered by C tests.
+- [x] Backward ops for spatial/linear nodes (Conv2d, Conv1d, Flatten,
+      AvgPool2d, SumPool2d, Scale) and spiking neurons (LIF/IF/CubaLIF
+      with surrogate through the spike output, zero through the
+      hard-reset branch).
+- [x] Graph-level BPTT tape (`tape.h`): retains per-step activations
+      and neuron state, backpropagates through Delay/LI recurrence,
+      matches `nir_runtime_run` bit for bit, finite-difference
+      verified on smooth topologies.
+- [x] Mini-batch training (`minibatch.h`): mean loss/gradient
+      reduction over a batch-1 loop (no batch axis on the tensor
+      ABI) plus seeded Fisher-Yates epoch shuffling.
+- [x] Optimizer-state checkpoints: v2 `optimizers` section persists
+      SGD velocity and Adam m/v/step per node for bit-identical
+      resume; v1 files still load.
+- [x] Weight initializers (`init.h`: Xavier/He/uniform from
+      `nir_rng_t`), LR schedules (`schedule.h`: step/cosine/
+      exponential mirroring torch), and extra losses (`loss.h`:
+      MSE plus spike-count cross-entropy).
+- [x] End-to-end C training driver (`driver.h`) plus a worked MNIST
+      example (`examples/mnist_train`): loads IDX, encodes, runs
+      the tape, steps SGD/Adam per batch, saves optimizer
+      checkpoints — zero Python at train time (see Training).
+
+## Training
+
+The driver wires the tested units into one loop; no Python or
+torch is involved after the fixtures are committed:
+
+```text
+IDX MNIST (data.h) → encode (encode.h: repeat/rate)
+  → tape forward (tape.h, unprimed per sample)
+  → cross-entropy (train.h) → tape backward
+  → minibatch mean (minibatch.h) → SGD/Adam step
+  → checkpoint with optimizer state (checkpoint.h)
+```
+
+Build and run the worked example (tiny 2×2, 3-sample fixture,
+4-step LI network, 20 Adam epochs):
+
+```sh
+cmake -S . -B build
+cmake --build build --parallel
+./build/examples/mnist_train \
+  examples/mnist_tiny_graph.json \
+  tests/fixtures/mnist_tiny_images.idx \
+  tests/fixtures/mnist_tiny_labels.idx \
+  /tmp/mnist_tiny_checkpoint.json 20
+```
+
+Expected output (deterministic from seed 7): initial loss
+~2.39 at 0.000 accuracy, falling to ~1.16 at 0.667 accuracy
+by epoch 20, saving a v2 checkpoint with `step 40` (2 batches
+× 20 epochs). `tests/test_driver.c` asserts the same run beats
+its initial loss by 0.5 and resumes bit-identically from the
+saved checkpoint.
+
+Zero-Python proof: the example is a pure C binary — CI runs it
+via ctest and again with `PATH=/nonexistent` (no `python` or
+`python3` resolvable), and it still trains and saves. The only
+Python in the repo (`tools/`) regenerates fixtures; training
+and inference never invoke it.
 
 ## Out of scope (for now)
 
-- Full training pipelines. The training math and training IO above are
-  supported; still missing are the graph-level backprop-through-time tape
-  ([#39](https://github.com/Capsize-Games/nir-c-runtime/issues/39)),
-  backward ops for spatial/linear
-  ([#40](https://github.com/Capsize-Games/nir-c-runtime/issues/40)) and
-  spiking-neuron
-  ([#41](https://github.com/Capsize-Games/nir-c-runtime/issues/41)) nodes,
-  mini-batch training
-  ([#42](https://github.com/Capsize-Games/nir-c-runtime/issues/42)),
-  optimizer-state checkpoint resume
-  ([#43](https://github.com/Capsize-Games/nir-c-runtime/issues/43)), and an
-  end-to-end C training driver with a worked example
-  ([#44](https://github.com/Capsize-Games/nir-c-runtime/issues/44)).
-  Weight initializers
-  ([#45](https://github.com/Capsize-Games/nir-c-runtime/issues/45)),
-  learning-rate schedules
-  ([#46](https://github.com/Capsize-Games/nir-c-runtime/issues/46)), and
-  additional loss functions
-  ([#47](https://github.com/Capsize-Games/nir-c-runtime/issues/47)) are filed
-  as follow-ups.
 - General Curlee/JOE graph execution. The narrow, allocation-free event ABI is
   integrated as the reference path for
   [curlee#316](https://github.com/w4ffl35/curlee/issues/316); loading arbitrary

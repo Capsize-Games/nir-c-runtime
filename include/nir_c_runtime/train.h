@@ -3,11 +3,12 @@
  * STDP rule ported from spikeforge's STDPSynapse.
  *
  * This mirrors the torch training step (cross_entropy on logits,
- * then a torch.optim.Adam step) for single-step topologies whose
- * backward pass the caller composes from the layer backward ops in
- * ops.h. A graph-level tape retaining per-step activations for
- * backprop-through-time is future work; optimizers here operate on
- * caller-provided float buffers (e.g. a node's weight array).
+ * then a torch.optim.Adam step). Single-step callers compose the
+ * backward pass from the layer backward ops in ops.h; the
+ * graph-level BPTT tape (tape.h) and the end-to-end driver
+ * (driver.h) compose it for whole graphs. Optimizers here
+ * operate on caller-provided float buffers (e.g. a node's
+ * weight array).
  */
 #ifndef NIR_C_RUNTIME_TRAIN_H
 #define NIR_C_RUNTIME_TRAIN_H

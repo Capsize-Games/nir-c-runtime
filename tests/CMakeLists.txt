@@ -28,6 +28,7 @@ nir_add_test(test_data)
 nir_add_test(test_checkpoint)
 nir_add_test(test_minibatch)
 nir_add_test(test_tape)
+nir_add_test(test_driver)
 
 # OOM sweep includes src/json.c directly, so it must not link the library
 # (that would duplicate the json_* symbols); it only needs the headers.
