@@ -29,6 +29,13 @@ jobs:
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - name: Train with no Python on PATH
+        run: >-
+          PATH=/nonexistent ./build/examples/mnist_train
+          examples/mnist_tiny_graph.json
+          tests/fixtures/mnist_tiny_images.idx
+          tests/fixtures/mnist_tiny_labels.idx
+          ./build/mnist_nopython_checkpoint.json 2
 
   sanitizers:
     runs-on: ubuntu-latest

@@ -28,9 +28,12 @@ add_library(nir_c_runtime
   src/checkpoint.c
   src/minibatch.c
   src/tape.c
+  src/driver.c
+  src/driver_loop.c
 )
 target_include_directories(nir_c_runtime PUBLIC include)
 target_link_libraries(nir_c_runtime PUBLIC m)
 
 enable_testing()
 add_subdirectory(tests)
+add_subdirectory(examples)
