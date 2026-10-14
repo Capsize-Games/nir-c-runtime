@@ -914,3 +914,528 @@ int nir_op_linear_backward(
         NULL, grad_input
     );
 }
+
+int nir_op_conv2d_backward(
+    const nir_conv2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+) {
+    if (params == NULL || !tensor_valid(input, 3) ||
+        params->weight == NULL ||
+        params->in_channels != input->shape[0] ||
+        params->out_channels == 0 || params->in_channels == 0 ||
+        grad_weight == NULL || grad_input == NULL) {
+        return 0;
+    }
+    size_t weight_count;
+    if (!checked_mul(
+            params->out_channels, params->in_channels,
+            &weight_count) ||
+        !checked_mul(weight_count, params->kernel_h, &weight_count) ||
+        !checked_mul(weight_count, params->kernel_w, &weight_count) ||
+        weight_count > SIZE_MAX / sizeof(float)) return 0;
+    if ((params->bias == NULL) != (grad_bias == NULL)) {
+        return 0;
+    }
+    size_t in_h = input->shape[1], in_w = input->shape[2];
+    size_t out_h, out_w;
+    if (!conv_out_dim(
+            in_h, params->padding_h, params->dilation_h,
+            params->kernel_h, params->stride_h, &out_h) ||
+        !conv_out_dim(
+            in_w, params->padding_w, params->dilation_w,
+            params->kernel_w, params->stride_w, &out_w)) return 0;
+    if (!tensor_valid(grad_output, 3) ||
+        grad_output->shape[0] != params->out_channels ||
+        grad_output->shape[1] != out_h ||
+        grad_output->shape[2] != out_w) {
+        return 0;
+    }
+    size_t wshape[1] = {weight_count};
+    size_t bshape[1] = {params->out_channels};
+    if (overlaps_output_shape(input, grad_weight, wshape, 1) ||
+        overlaps_output_shape(grad_output, grad_weight, wshape, 1) ||
+        overlaps_output_shape(
+            input, grad_input, input->shape, input->ndim) ||
+        overlaps_output_shape(
+            grad_output, grad_input, input->shape, input->ndim) ||
+        !prepare_output(grad_weight, wshape, 1) ||
+        !prepare_output(grad_input, input->shape, input->ndim)) {
+        return 0;
+    }
+    if (grad_bias != NULL &&
+        (overlaps_output_shape(input, grad_bias, bshape, 1) ||
+         overlaps_output_shape(grad_output, grad_bias, bshape, 1) ||
+         !prepare_output(grad_bias, bshape, 1))) {
+        return 0;
+    }
+    if (tensors_overlap(grad_weight, grad_input) ||
+        (grad_bias != NULL &&
+         (tensors_overlap(grad_weight, grad_bias) ||
+          tensors_overlap(grad_input, grad_bias)))) {
+        return 0;
+    }
+    memset(grad_input->data, 0, grad_input->size * sizeof(float));
+    for (size_t oc = 0; oc < params->out_channels; oc++) {
+        for (size_t oh = 0; oh < out_h; oh++) {
+            for (size_t ow = 0; ow < out_w; ow++) {
+                float gy = grad_output->data[
+                    (oc * out_h + oh) * out_w + ow];
+                if (grad_bias != NULL) {
+                    grad_bias->data[oc] += gy;
+                }
+                for (size_t ic = 0; ic < params->in_channels; ic++) {
+                    for (size_t kh = 0; kh < params->kernel_h; kh++) {
+                        long ih = (long)(oh * params->stride_h)
+                            - params->padding_h
+                            + (long)kh * params->dilation_h;
+                        if (ih < 0 || (size_t)ih >= in_h) continue;
+                        for (size_t kw = 0; kw < params->kernel_w; kw++) {
+                            long iw = (long)(ow * params->stride_w)
+                                - params->padding_w
+                                + (long)kw * params->dilation_w;
+                            if (iw < 0 || (size_t)iw >= in_w) continue;
+                            size_t in_index = (ic * in_h + (size_t)ih)
+                                * in_w + (size_t)iw;
+                            size_t w_index =
+                                ((oc * params->in_channels + ic)
+                                    * params->kernel_h + kh)
+                                * params->kernel_w + kw;
+                            grad_input->data[in_index] +=
+                                gy * params->weight[w_index];
+                            grad_weight->data[w_index] +=
+                                gy * input->data[in_index];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+int nir_op_conv1d_backward(
+    const nir_conv1d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+) {
+    if (params == NULL || !tensor_valid(input, 2) ||
+        params->weight == NULL ||
+        params->in_channels != input->shape[0] ||
+        params->out_channels == 0 || params->in_channels == 0 ||
+        grad_weight == NULL || grad_input == NULL) {
+        return 0;
+    }
+    size_t weight_count;
+    if (!checked_mul(
+            params->out_channels, params->in_channels,
+            &weight_count) ||
+        !checked_mul(weight_count, params->kernel, &weight_count) ||
+        weight_count > SIZE_MAX / sizeof(float)) return 0;
+    if ((params->bias == NULL) != (grad_bias == NULL)) {
+        return 0;
+    }
+    size_t in_len = input->shape[1];
+    size_t out_len;
+    if (!conv_out_dim(
+            in_len, params->padding, params->dilation,
+            params->kernel, params->stride, &out_len)) return 0;
+    if (!tensor_valid(grad_output, 2) ||
+        grad_output->shape[0] != params->out_channels ||
+        grad_output->shape[1] != out_len) {
+        return 0;
+    }
+    size_t wshape[1] = {weight_count};
+    size_t bshape[1] = {params->out_channels};
+    if (overlaps_output_shape(input, grad_weight, wshape, 1) ||
+        overlaps_output_shape(grad_output, grad_weight, wshape, 1) ||
+        overlaps_output_shape(
+            input, grad_input, input->shape, input->ndim) ||
+        overlaps_output_shape(
+            grad_output, grad_input, input->shape, input->ndim) ||
+        !prepare_output(grad_weight, wshape, 1) ||
+        !prepare_output(grad_input, input->shape, input->ndim)) {
+        return 0;
+    }
+    if (grad_bias != NULL &&
+        (overlaps_output_shape(input, grad_bias, bshape, 1) ||
+         overlaps_output_shape(grad_output, grad_bias, bshape, 1) ||
+         !prepare_output(grad_bias, bshape, 1))) {
+        return 0;
+    }
+    if (tensors_overlap(grad_weight, grad_input) ||
+        (grad_bias != NULL &&
+         (tensors_overlap(grad_weight, grad_bias) ||
+          tensors_overlap(grad_input, grad_bias)))) {
+        return 0;
+    }
+    memset(grad_input->data, 0, grad_input->size * sizeof(float));
+    for (size_t oc = 0; oc < params->out_channels; oc++) {
+        for (size_t ol = 0; ol < out_len; ol++) {
+            float gy = grad_output->data[oc * out_len + ol];
+            if (grad_bias != NULL) {
+                grad_bias->data[oc] += gy;
+            }
+            for (size_t ic = 0; ic < params->in_channels; ic++) {
+                for (size_t k = 0; k < params->kernel; k++) {
+                    long il = (long)(ol * (size_t)params->stride)
+                        - params->padding
+                        + (long)k * params->dilation;
+                    if (il < 0 || (size_t)il >= in_len) continue;
+                    size_t in_index = ic * in_len + (size_t)il;
+                    size_t w_index = (oc * params->in_channels + ic)
+                        * params->kernel + k;
+                    grad_input->data[in_index] +=
+                        gy * params->weight[w_index];
+                    grad_weight->data[w_index] +=
+                        gy * input->data[in_index];
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+int nir_op_flatten_backward(
+    const nir_tensor_t *input, const nir_tensor_t *grad_output,
+    nir_tensor_t *grad_input
+) {
+    if (input == NULL || !tensor_valid(input, input->ndim) ||
+        !tensor_valid(grad_output, 1) ||
+        grad_output->size != input->size) {
+        return 0;
+    }
+    if (!prepare_output(grad_input, input->shape, input->ndim)) {
+        return 0;
+    }
+    memmove(
+        grad_input->data, grad_output->data,
+        grad_output->size * sizeof(float)
+    );
+    return 1;
+}
+
+static int pool2d_backward_into(
+    const nir_pool2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, float per_cell,
+    nir_tensor_t *grad_input
+) {
+    if (params == NULL || !tensor_valid(input, 3) ||
+        params->kernel_h <= 0 || params->kernel_w <= 0 ||
+        params->stride_h <= 0 || params->stride_w <= 0 ||
+        params->padding_h < 0 || params->padding_w < 0 ||
+        grad_input == NULL) {
+        return 0;
+    }
+    size_t channels = input->shape[0], in_h = input->shape[1],
+           in_w = input->shape[2];
+    if (!fits_padded_long(in_h, params->padding_h) ||
+        !fits_padded_long(in_w, params->padding_w)) return 0;
+    long long nh = (long long)in_h + 2LL * params->padding_h -
+        params->kernel_h;
+    long long nw = (long long)in_w + 2LL * params->padding_w -
+        params->kernel_w;
+    if (nh < 0 || nw < 0) return 0;
+    size_t out_h = (size_t)(nh / params->stride_h + 1);
+    size_t out_w = (size_t)(nw / params->stride_w + 1);
+    if (!tensor_valid(grad_output, 3) ||
+        grad_output->shape[0] != channels ||
+        grad_output->shape[1] != out_h ||
+        grad_output->shape[2] != out_w) {
+        return 0;
+    }
+    if (overlaps_output_shape(
+            input, grad_input, input->shape, input->ndim) ||
+        overlaps_output_shape(
+            grad_output, grad_input, input->shape, input->ndim) ||
+        !prepare_output(grad_input, input->shape, input->ndim)) {
+        return 0;
+    }
+    memset(grad_input->data, 0, grad_input->size * sizeof(float));
+    for (size_t c = 0; c < channels; c++) {
+        for (size_t oh = 0; oh < out_h; oh++) {
+            for (size_t ow = 0; ow < out_w; ow++) {
+                float share = grad_output->data[
+                    (c * out_h + oh) * out_w + ow] * per_cell;
+                for (int kh = 0; kh < params->kernel_h; kh++) {
+                    long ih = (long)(oh * params->stride_h)
+                        - params->padding_h + kh;
+                    if (ih < 0 || (size_t)ih >= in_h) continue;
+                    for (int kw = 0; kw < params->kernel_w; kw++) {
+                        long iw = (long)(ow * params->stride_w)
+                            - params->padding_w + kw;
+                        if (iw < 0 || (size_t)iw >= in_w) continue;
+                        grad_input->data[
+                            (c * in_h + (size_t)ih) * in_w +
+                            (size_t)iw] += share;
+                    }
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+int nir_op_avgpool2d_backward(
+    const nir_pool2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_input
+) {
+    if (params == NULL || params->kernel_h <= 0 ||
+        params->kernel_w <= 0) {
+        return 0;
+    }
+    float area =
+        (float)params->kernel_h * (float)params->kernel_w;
+    return pool2d_backward_into(
+        params, input, grad_output, 1.0f / area, grad_input
+    );
+}
+
+int nir_op_sumpool2d_backward(
+    const nir_pool2d_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_input
+) {
+    return pool2d_backward_into(
+        params, input, grad_output, 1.0f, grad_input
+    );
+}
+
+int nir_op_scale_backward(
+    const nir_scale_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_input,
+    float *grad_scale
+) {
+    if (params == NULL || !isfinite(params->scale) ||
+        grad_input == NULL ||
+        !tensor_valid(
+            grad_output,
+            grad_output != NULL ? grad_output->ndim : 0)) {
+        return 0;
+    }
+    if (grad_scale != NULL &&
+        (!tensor_valid(input, grad_output->ndim) ||
+         !tensor_same_shape(input, grad_output))) {
+        return 0;
+    }
+    if ((grad_scale != NULL &&
+         tensors_partially_overlap(input, grad_input)) ||
+        tensors_partially_overlap(grad_output, grad_input) ||
+        !prepare_output(
+            grad_input, grad_output->shape, grad_output->ndim)) {
+        return 0;
+    }
+    /* One pass reading both inputs before writing keeps every
+     * exact-alias combination safe. */
+    double acc = 0.0;
+    for (size_t i = 0; i < grad_output->size; i++) {
+        float gy = grad_output->data[i];
+        if (grad_scale != NULL) {
+            acc += (double)gy * (double)input->data[i];
+        }
+        grad_input->data[i] = gy * params->scale;
+    }
+    if (grad_scale != NULL) {
+        *grad_scale += (float)acc;
+    }
+    return 1;
+}
+
+/* Validate the wiring shared by the spiking-neuron backward ops:
+ * retained input, spike gradient, optional stored gradient, and
+ * the surrogate setup. Runs before any prev_matches call so a
+ * NULL input fails here instead of inside it. */
+static int spiking_backward_valid(
+    const nir_tensor_t *input, const nir_tensor_t *grad_spike,
+    const nir_tensor_t *grad_stored, nir_surrogate_kind_t surrogate,
+    float slope
+) {
+    float probe;
+    if (!tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        !tensor_valid(
+            grad_spike, input != NULL ? input->ndim : 0) ||
+        !tensor_same_shape(input, grad_spike) ||
+        (grad_stored != NULL &&
+         (!tensor_valid(grad_stored, input->ndim) ||
+          !tensor_same_shape(input, grad_stored))) ||
+        !nir_surrogate_grad(surrogate, slope, 0.0f, &probe)) {
+        return 0;
+    }
+    return 1;
+}
+
+/* Shape one spiking-backward output and check it against the
+ * readable tensors under the elementwise rule (exact alias
+ * allowed, partial overlap rejected). Sibling-overlap checks stay
+ * with the caller, which knows which outputs are live. */
+static int spiking_grad_prepare(
+    const nir_tensor_t *input, const nir_tensor_t *grad_spike,
+    const nir_tensor_t *retained_a, const nir_tensor_t *retained_b,
+    nir_tensor_t *grad
+) {
+    return grad != NULL &&
+        !tensors_partially_overlap(grad_spike, grad) &&
+        !tensors_partially_overlap(input, grad) &&
+        (retained_a == NULL ||
+         !tensors_partially_overlap(retained_a, grad)) &&
+        (retained_b == NULL ||
+         !tensors_partially_overlap(retained_b, grad)) &&
+        prepare_output(grad, input->shape, input->ndim);
+}
+
+int nir_op_lif_backward(
+    const nir_lif_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev, const nir_tensor_t *grad_spike,
+    const nir_tensor_t *grad_stored, nir_surrogate_kind_t surrogate,
+    float slope, nir_tensor_t *grad_input, nir_tensor_t *grad_prev
+) {
+    if (params == NULL || !isfinite(params->tau) ||
+        params->tau <= 0.0f || !isfinite(params->r) ||
+        !isfinite(params->v_threshold) ||
+        !spiking_backward_valid(
+            input, grad_spike, grad_stored, surrogate, slope) ||
+        !prev_matches(v_prev, input)) {
+        return 0;
+    }
+    if (!spiking_grad_prepare(
+            input, grad_spike, v_prev, NULL, grad_input)) {
+        return 0;
+    }
+    if (grad_prev != NULL &&
+        (!spiking_grad_prepare(
+             input, grad_spike, v_prev, NULL, grad_prev) ||
+         tensors_overlap(grad_input, grad_prev))) {
+        return 0;
+    }
+    double decay = exp(-1.0 / (double)params->tau);
+    double to_input = (double)params->r * (1.0 - decay);
+    double threshold = (double)params->v_threshold;
+    double s = (double)slope;
+    for (size_t i = 0; i < input->size; i++) {
+        double prev = v_prev != NULL ? (double)v_prev->data[i] : 0.0;
+        double membrane = (double)params->v_leak
+            + (prev - (double)params->v_leak) * decay
+            + (double)params->r * (1.0 - decay) *
+            (double)input->data[i];
+        double g = (double)grad_spike->data[i] *
+            surrogate_grad_unchecked(
+                surrogate, s, membrane - threshold
+            );
+        grad_input->data[i] = (float)(g * to_input);
+        if (grad_prev != NULL) {
+            grad_prev->data[i] = (float)(g * decay);
+        }
+    }
+    return 1;
+}
+
+int nir_op_if_backward(
+    const nir_if_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev, const nir_tensor_t *grad_spike,
+    const nir_tensor_t *grad_stored, nir_surrogate_kind_t surrogate,
+    float slope, nir_tensor_t *grad_input, nir_tensor_t *grad_prev
+) {
+    if (params == NULL || !isfinite(params->r) ||
+        !isfinite(params->v_threshold) ||
+        !spiking_backward_valid(
+            input, grad_spike, grad_stored, surrogate, slope) ||
+        !prev_matches(v_prev, input)) {
+        return 0;
+    }
+    if (!spiking_grad_prepare(
+            input, grad_spike, v_prev, NULL, grad_input)) {
+        return 0;
+    }
+    if (grad_prev != NULL &&
+        (!spiking_grad_prepare(
+             input, grad_spike, v_prev, NULL, grad_prev) ||
+         tensors_overlap(grad_input, grad_prev))) {
+        return 0;
+    }
+    double threshold = (double)params->v_threshold;
+    double s = (double)slope;
+    for (size_t i = 0; i < input->size; i++) {
+        double prev = v_prev != NULL ? (double)v_prev->data[i] : 0.0;
+        double membrane =
+            prev + (double)params->r * (double)input->data[i];
+        double g = (double)grad_spike->data[i] *
+            surrogate_grad_unchecked(
+                surrogate, s, membrane - threshold
+            );
+        grad_input->data[i] = (float)(g * (double)params->r);
+        if (grad_prev != NULL) {
+            grad_prev->data[i] = (float)g;
+        }
+    }
+    return 1;
+}
+
+int nir_op_cuba_backward(
+    const nir_cuba_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *syn_prev, const nir_tensor_t *mem_prev,
+    const nir_tensor_t *grad_spike, const nir_tensor_t *grad_stored,
+    nir_surrogate_kind_t surrogate, float slope,
+    nir_tensor_t *grad_input, nir_tensor_t *grad_syn_prev,
+    nir_tensor_t *grad_mem_prev
+) {
+    if (params == NULL || !isfinite(params->tau_syn) ||
+        params->tau_syn <= 0.0f || !isfinite(params->tau_mem) ||
+        params->tau_mem <= 0.0f || !isfinite(params->r) ||
+        !isfinite(params->w_in) || !isfinite(params->v_threshold) ||
+        !spiking_backward_valid(
+            input, grad_spike, grad_stored, surrogate, slope) ||
+        (syn_prev == NULL) != (mem_prev == NULL) ||
+        !prev_matches(syn_prev, input) ||
+        !prev_matches(mem_prev, input)) {
+        return 0;
+    }
+    if (!spiking_grad_prepare(
+            input, grad_spike, syn_prev, mem_prev, grad_input)) {
+        return 0;
+    }
+    if (grad_syn_prev != NULL &&
+        (!spiking_grad_prepare(
+             input, grad_spike, syn_prev, mem_prev,
+             grad_syn_prev) ||
+         tensors_overlap(grad_input, grad_syn_prev))) {
+        return 0;
+    }
+    if (grad_mem_prev != NULL &&
+        (!spiking_grad_prepare(
+             input, grad_spike, syn_prev, mem_prev,
+             grad_mem_prev) ||
+         tensors_overlap(grad_input, grad_mem_prev) ||
+         (grad_syn_prev != NULL &&
+          tensors_overlap(grad_syn_prev, grad_mem_prev)))) {
+        return 0;
+    }
+    double syn_decay = exp(-1.0 / (double)params->tau_syn);
+    double mem_decay = exp(-1.0 / (double)params->tau_mem);
+    double to_mem = (double)params->r * (1.0 - mem_decay);
+    double to_syn = (double)params->w_in * (1.0 - syn_decay);
+    double threshold = (double)params->v_threshold;
+    double s = (double)slope;
+    for (size_t i = 0; i < input->size; i++) {
+        double syn_previous = syn_prev != NULL ?
+            (double)syn_prev->data[i] : 0.0;
+        double mem_previous = mem_prev != NULL ?
+            (double)mem_prev->data[i] : 0.0;
+        double syn = syn_previous * syn_decay + to_syn *
+            (double)input->data[i];
+        double membrane = (double)params->v_leak
+            + (mem_previous - (double)params->v_leak) * mem_decay
+            + to_mem * syn;
+        double g = (double)grad_spike->data[i] *
+            surrogate_grad_unchecked(
+                surrogate, s, membrane - threshold
+            );
+        double dsyn = g * to_mem;
+        grad_input->data[i] = (float)(dsyn * to_syn);
+        if (grad_syn_prev != NULL) {
+            grad_syn_prev->data[i] = (float)(dsyn * syn_decay);
+        }
+        if (grad_mem_prev != NULL) {
+            grad_mem_prev->data[i] = (float)(g * mem_decay);
+        }
+    }
+    return 1;
+}
