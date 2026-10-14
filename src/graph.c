@@ -324,11 +324,11 @@ static int load_conv2d(
     int groups = 1;
     const json_value_t *groups_json = json_object_get(params, "groups");
     if (groups_json != NULL && !int_at(params, "groups", &groups)) {
-        set_error(error, "Conv2d groups must be a nonnegative integer", NULL);
+        set_error(error, "Conv2d groups must be a nonnegative integer");
         return 0;
     }
     if (groups != 1) {
-        set_error(error, "Conv2d groups must be 1; grouped convolution is not supported", NULL);
+        set_error(error, "Conv2d groups must be 1; grouped convolution is not supported");
         return 0;
     }
     if (!pair_at(params, "stride", &p->stride_h, &p->stride_w) ||
@@ -700,6 +700,8 @@ int nir_graph_load(
         return 0;
     }
     out->node_count = node_count;
+    size_t input_count = 0;
+    size_t output_count = 0;
     for (size_t i = 0; i < node_count; i++) {
         if (!load_node(json_array_get(nodes_json, i), &out->nodes[i], error)) {
             nir_graph_free(out);
@@ -716,9 +718,35 @@ int nir_graph_load(
         }
         if (out->nodes[i].kind == NIR_NODE_INPUT) {
             out->input_index = i;
+            input_count++;
         } else if (out->nodes[i].kind == NIR_NODE_OUTPUT) {
             out->output_index = i;
+            output_count++;
         }
+    }
+    if (input_count == 0) {
+        set_error(error, "graph has no Input node; exactly one is required");
+        nir_graph_free(out);
+        return 0;
+    }
+    if (input_count > 1) {
+        set_error(
+            error, "graph has multiple Input nodes; exactly one is required"
+        );
+        nir_graph_free(out);
+        return 0;
+    }
+    if (output_count == 0) {
+        set_error(error, "graph has no Output node; exactly one is required");
+        nir_graph_free(out);
+        return 0;
+    }
+    if (output_count > 1) {
+        set_error(
+            error, "graph has multiple Output nodes; exactly one is required"
+        );
+        nir_graph_free(out);
+        return 0;
     }
     if (!load_edges(edges_json, out, error)) {
         nir_graph_free(out);
