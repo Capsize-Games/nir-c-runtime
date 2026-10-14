@@ -1,20 +1,45 @@
 #include "nir_c_runtime/runtime.h"
 
-#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "nir_c_runtime/ops.h"
 
-static void set_error(char **error, const char *fmt, const char *arg) {
+/* The message is always data: copied verbatim, never interpreted
+ * as a printf format string. */
+static void set_error(char **error, const char *message) {
     if (error == NULL || *error != NULL) {
         return;
     }
-    size_t length = strlen(fmt) + (arg != NULL ? strlen(arg) : 0) + 8;
+    size_t length = strlen(message) + 1;
     *error = (char *)malloc(length);
     if (*error != NULL) {
-        snprintf(*error, length, fmt, arg != NULL ? arg : "");
+        memcpy(*error, message, length);
+    }
+}
+
+/* Join a caller-supplied name into a message by concatenation, so the
+ * name can never act as a printf conversion. */
+static void set_error_arg(
+    char **error, const char *prefix, const char *arg, const char *suffix
+) {
+    if (error == NULL || *error != NULL) {
+        return;
+    }
+    if (arg == NULL) {
+        arg = "";
+    }
+    size_t prefix_length = strlen(prefix);
+    size_t arg_length = strlen(arg);
+    size_t suffix_length = strlen(suffix);
+    *error = (char *)malloc(prefix_length + arg_length + suffix_length + 1);
+    if (*error != NULL) {
+        memcpy(*error, prefix, prefix_length);
+        memcpy(*error + prefix_length, arg, arg_length);
+        memcpy(
+            *error + prefix_length + arg_length, suffix, suffix_length + 1
+        );
     }
 }
 
@@ -32,7 +57,7 @@ static int compute_order(
     if (pending == NULL || queue == NULL) {
         free(pending);
         free(queue);
-        set_error(error, "out of memory", NULL);
+        set_error(error, "out of memory");
         return 0;
     }
     for (size_t e = 0; e < graph->edge_count; e++) {
@@ -66,9 +91,7 @@ static int compute_order(
     free(pending);
     free(queue);
     if (filled != n) {
-        set_error(
-            error, "NIR graph cycle is not broken by a Delay node", NULL
-        );
+        set_error(error, "NIR graph cycle is not broken by a Delay node");
         return 0;
     }
     return 1;
@@ -78,43 +101,43 @@ int nir_runtime_init(
     nir_runtime_t *rt, const nir_graph_t *graph, char **error
 ) {
     if (rt == NULL) {
-        set_error(error, "invalid runtime graph", NULL);
+        set_error(error, "invalid runtime graph");
         return 0;
     }
     memset(rt, 0, sizeof(*rt));
     if (graph == NULL || graph->node_count == 0) {
-        set_error(error, "invalid runtime graph", NULL);
+        set_error(error, "invalid runtime graph");
         return 0;
     }
     size_t n = graph->node_count;
     if (n > SIZE_MAX / sizeof(size_t) ||
         n > SIZE_MAX / sizeof(nir_tensor_t) ||
         n > SIZE_MAX / sizeof(int)) {
-        set_error(error, "runtime graph is too large", NULL);
+        set_error(error, "runtime graph is too large");
         return 0;
     }
     if (graph->nodes == NULL ||
         (graph->edge_count != 0 && graph->edges == NULL) ||
         graph->input_index >= n || graph->output_index >= n) {
-        set_error(error, "invalid runtime graph", NULL);
+        set_error(error, "invalid runtime graph");
         return 0;
     }
     if (graph->nodes[graph->input_index].kind != NIR_NODE_INPUT ||
         graph->nodes[graph->output_index].kind != NIR_NODE_OUTPUT) {
-        set_error(error, "runtime graph has invalid input or output node", NULL);
+        set_error(error, "runtime graph has invalid input or output node");
         return 0;
     }
     for (size_t i = 0; i < graph->node_count; i++) {
         if (graph->nodes[i].kind < NIR_NODE_INPUT ||
             graph->nodes[i].kind > NIR_NODE_LINEAR) {
-            set_error(error, "runtime graph contains an invalid node kind", NULL);
+            set_error(error, "runtime graph contains an invalid node kind");
             return 0;
         }
     }
     for (size_t e = 0; e < graph->edge_count; e++) {
         if (graph->edges[e].source_index >= graph->node_count ||
             graph->edges[e].target_index >= graph->node_count) {
-            set_error(error, "invalid runtime graph edge", NULL);
+            set_error(error, "invalid runtime graph edge");
             return 0;
         }
     }
@@ -135,7 +158,7 @@ int nir_runtime_init(
         rt->syn_state == NULL || rt->delay_buffer == NULL ||
         rt->delay_primed == NULL) {
         nir_runtime_free(rt);
-        set_error(error, "out of memory", NULL);
+        set_error(error, "out of memory");
         return 0;
     }
     if (!compute_order(graph, rt->order, error)) {
@@ -195,28 +218,26 @@ static int sum_incoming(
         if (!have_any) {
             *out = nir_tensor_clone(&values[src]);
             if (out->data == NULL) {
-                set_error(error, "out of memory or invalid node tensor", NULL);
+                set_error(error, "out of memory or invalid node tensor");
                 return 0;
             }
             have_any = 1;
         } else if (!nir_tensor_add_inplace(out, &values[src])) {
             nir_tensor_free(out);
-            set_error(error, "shape mismatch summing node inputs", NULL);
+            set_error(error, "shape mismatch summing node inputs");
             return 0;
         }
     }
     if (!found_edge) {
-        set_error(
-            error, "node %s received no inputs",
-            graph->nodes[target_index].name
-        );
+        set_error_arg(error, "node ", graph->nodes[target_index].name,
+            " received no inputs");
         return 0;
     }
     if (!have_any) {
         size_t one[1] = {1};
         *out = nir_tensor_alloc(one, 1); /* zero-initialized scalar */
         if (out->data == NULL) {
-            set_error(error, "out of memory", NULL);
+            set_error(error, "out of memory");
             return 0;
         }
     }
@@ -346,14 +367,14 @@ static int run_step(
     const nir_graph_t *graph = rt->graph;
     values[graph->input_index] = nir_tensor_clone(frame);
     if (values[graph->input_index].data == NULL) {
-        set_error(error, "invalid input tensor or out of memory", NULL);
+        set_error(error, "invalid input tensor or out of memory");
         return 0;
     }
     for (size_t i = 0; i < graph->node_count; i++) {
         if (graph->nodes[i].kind == NIR_NODE_DELAY && rt->delay_primed[i]) {
             values[i] = nir_tensor_clone(&rt->delay_buffer[i]);
             if (values[i].data == NULL) {
-                set_error(error, "invalid delay state or out of memory", NULL);
+                set_error(error, "invalid delay state or out of memory");
                 return 0;
             }
         }
@@ -371,7 +392,7 @@ static int run_step(
         values[index] = apply_node(&graph->nodes[index], &summed, rt, index);
         nir_tensor_free(&summed);
         if (values[index].data == NULL) {
-            set_error(error, "node operation failed or out of memory", NULL);
+            set_error(error, "node operation failed or out of memory");
             return 0;
         }
     }
@@ -412,7 +433,7 @@ static int workspace_ready(
         workspace->sum->data == NULL || workspace->total->data == NULL ||
         readout_out->data == NULL ||
         (graph_has_cuba(rt->graph) && workspace->syn_state == NULL)) {
-        set_error(error, "incomplete runtime workspace", NULL);
+        set_error(error, "incomplete runtime workspace");
         return 0;
     }
     return 1;
@@ -451,24 +472,23 @@ static int sum_incoming_workspace(
         }
         if (!have_any) {
             if (!nir_tensor_copy_into(sum, &workspace->values[source])) {
-                set_error(error, "workspace tensor is too small", NULL);
+                set_error(error, "workspace tensor is too small");
                 return 0;
             }
             have_any = 1;
         } else if (!nir_tensor_add_inplace(
                        sum, &workspace->values[source])) {
-            set_error(error, "shape mismatch summing node inputs", NULL);
+            set_error(error, "shape mismatch summing node inputs");
             return 0;
         }
     }
     if (!found_edge) {
-        set_error(
-            error, "node %s received no inputs", graph->nodes[target_index].name
-        );
+        set_error_arg(error, "node ", graph->nodes[target_index].name,
+            " received no inputs");
         return 0;
     }
     if (!have_any && !set_zero_scalar(sum)) {
-        set_error(error, "workspace tensor is too small", NULL);
+        set_error(error, "workspace tensor is too small");
         return 0;
     }
     return 1;
@@ -569,7 +589,7 @@ static int apply_node_workspace(
             break;
     }
     if (!ok) {
-        set_error(error, "workspace tensor is too small or invalid", NULL);
+        set_error(error, "workspace tensor is too small or invalid");
     }
     return ok;
 }
@@ -581,7 +601,7 @@ static int run_step_workspace(
     const nir_graph_t *graph = rt->graph;
     if (!nir_tensor_copy_into(
             &workspace->values[graph->input_index], frame)) {
-        set_error(error, "workspace input tensor is too small", NULL);
+        set_error(error, "workspace input tensor is too small");
         return 0;
     }
     for (size_t i = 0; i < graph->node_count; i++) {
@@ -589,7 +609,7 @@ static int run_step_workspace(
             workspace->delay_primed[i] &&
             !nir_tensor_copy_into(
                 &workspace->values[i], &workspace->delay_buffer[i])) {
-            set_error(error, "workspace delay tensor is too small", NULL);
+            set_error(error, "workspace delay tensor is too small");
             return 0;
         }
     }
@@ -615,7 +635,7 @@ static int run_step_workspace(
             !nir_tensor_copy_into(
                 &workspace->delay_buffer[i], workspace->sum
             )) {
-            set_error(error, "workspace delay tensor is too small", NULL);
+            set_error(error, "workspace delay tensor is too small");
             return 0;
         }
         workspace->delay_primed[i] = 1;
@@ -638,7 +658,7 @@ int nir_runtime_run(
         rt->delay_buffer == NULL || rt->delay_primed == NULL || frames == NULL ||
         readout_out == NULL || num_steps == 0) {
         set_error(error, num_steps == 0 ? "no steps to run" :
-                  "invalid runtime arguments", NULL);
+                  "invalid runtime arguments");
         return 0;
     }
     const nir_graph_t *graph = rt->graph;
@@ -653,7 +673,7 @@ int nir_runtime_run(
         );
         if (values == NULL) {
             nir_tensor_free(&total);
-            set_error(error, "out of memory", NULL);
+            set_error(error, "out of memory");
             return 0;
         }
         if (!run_step(rt, &frames[t], values, error)) {
@@ -665,7 +685,7 @@ int nir_runtime_run(
             total = nir_tensor_clone(&values[graph->output_index]);
             if (total.data == NULL) {
                 free_values(values, graph->node_count);
-                set_error(error, "out of memory or invalid output tensor", NULL);
+                set_error(error, "out of memory or invalid output tensor");
                 return 0;
             }
             have_total = 1;
@@ -673,7 +693,7 @@ int nir_runtime_run(
             if (!nir_tensor_add_inplace(&total, &values[graph->output_index])) {
                 free_values(values, graph->node_count);
                 nir_tensor_free(&total);
-                set_error(error, "runtime output shape changed", NULL);
+                set_error(error, "runtime output shape changed");
                 return 0;
             }
         }
@@ -681,7 +701,7 @@ int nir_runtime_run(
     }
 
     if (!have_total || num_steps == 0) {
-        set_error(error, "no steps to run", NULL);
+        set_error(error, "no steps to run");
         nir_tensor_free(&total);
         return 0;
     }
@@ -716,11 +736,11 @@ int nir_runtime_run_workspace(
         rt->graph->input_index >= rt->graph->node_count ||
         rt->graph->output_index >= rt->graph->node_count ||
         rt->order == NULL || frames == NULL) {
-        set_error(error, "invalid runtime arguments", NULL);
+        set_error(error, "invalid runtime arguments");
         return 0;
     }
     if (num_steps == 0) {
-        set_error(error, "no steps to run", NULL);
+        set_error(error, "no steps to run");
         return 0;
     }
     if (!workspace_ready(rt, workspace, readout_out, error)) {
@@ -735,12 +755,12 @@ int nir_runtime_run_workspace(
             &workspace->values[rt->graph->output_index];
         if (!have_total) {
             if (!nir_tensor_copy_into(workspace->total, output)) {
-                set_error(error, "workspace total tensor is too small", NULL);
+                set_error(error, "workspace total tensor is too small");
                 return 0;
             }
             have_total = 1;
         } else if (!nir_tensor_add_inplace(workspace->total, output)) {
-            set_error(error, "workspace output shape changed", NULL);
+            set_error(error, "workspace output shape changed");
             return 0;
         }
     }
@@ -748,7 +768,7 @@ int nir_runtime_run_workspace(
         workspace->total->data[i] /= (float)num_steps;
     }
     if (!nir_tensor_copy_into(readout_out, workspace->total)) {
-        set_error(error, "workspace readout tensor is too small", NULL);
+        set_error(error, "workspace readout tensor is too small");
         return 0;
     }
     return 1;
