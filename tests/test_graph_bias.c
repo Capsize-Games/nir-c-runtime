@@ -75,8 +75,10 @@ static void check_case(const bias_case_t *test) {
         geometry = "\"stride\":1,\"padding\":0,\"dilation\":1,\"groups\":1";
     }
     snprintf(text, sizeof(text),
-        "{\"nodes\":[{\"name\":\"layer\",\"kind\":\"%s\","
-        "\"params\":{\"weight\":%s%s,%s}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"input\",\"kind\":\"Input\"},"
+        "{\"name\":\"layer\",\"kind\":\"%s\","
+        "\"params\":{\"weight\":%s%s,%s}},"
+        "{\"name\":\"output\",\"kind\":\"Output\"}],\"edges\":[]}",
         test->kind, weight, test->bias, geometry);
     char *error = NULL;
     json_value_t *json = json_parse(text, &error);
@@ -84,8 +86,9 @@ static void check_case(const bias_case_t *test) {
     nir_graph_t graph;
     CHECK(nir_graph_load(json, &graph, &error) == test->accepted);
     if (test->accepted) {
-        CHECK(error == NULL && graph.node_count == 1);
-        check_accepted_output(&graph.nodes[0]);
+        CHECK(error == NULL && graph.node_count == 3);
+        CHECK(graph.input_index == 0 && graph.output_index == 2);
+        check_accepted_output(&graph.nodes[1]);
     } else {
         CHECK(error != NULL && strstr(error, "bias") != NULL);
         CHECK(graph.nodes == NULL && graph.node_count == 0);
