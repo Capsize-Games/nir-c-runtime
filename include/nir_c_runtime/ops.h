@@ -166,4 +166,65 @@ int nir_op_scale_into(
     nir_tensor_t *output
 );
 
+/* Training: single-step backward ops. The forward spike
+ * nonlinearities stay strict Heavisides; the backward pass below
+ * substitutes a smooth surrogate derivative, mirroring snnTorch's
+ * `surrogate` module (see spikeforge/introspection/surrogate.py).
+ * Names resolve through nir_surrogate_from_name in train.h, which
+ * rejects unknown names instead of silently defaulting. */
+
+typedef enum {
+    NIR_SURROGATE_FAST_SIGMOID,
+    NIR_SURROGATE_ATAN
+} nir_surrogate_kind_t;
+
+/* Surrogate derivative dS/dx at x. fast_sigmoid with slope s:
+ * s / (1 + |s*x|)^2 (snnTorch default s = 25). atan with
+ * steepness a: (a/2) / (1 + (pi*a*x/2)^2) (snnTorch default
+ * a = 2). Returns 0 unless `kind` is known and `slope` is
+ * finite and positive. */
+int nir_surrogate_grad(
+    nir_surrogate_kind_t kind, float slope, float x, float *out
+);
+
+/* Backward through Threshold: forward is the strict Heaviside,
+ * and grad_input[i] = grad_output[i] * surr(membrane[i] -
+ * threshold). `membrane` is the retained pre-threshold input.
+ * Shapes must match; `grad_input` may exactly alias
+ * `grad_output` (elementwise rule). */
+int nir_op_threshold_backward(
+    const nir_threshold_params_t *params, const nir_tensor_t *membrane,
+    const nir_tensor_t *grad_output, nir_surrogate_kind_t surrogate,
+    float slope, nir_tensor_t *grad_input
+);
+
+/* Backward through one LI step: with decay = exp(-1 / tau),
+ * grad_input = grad_output * r * (1 - decay) and grad_prev =
+ * grad_output * decay. `grad_prev` may be NULL when the
+ * previous-state gradient is unneeded. Either output may exactly
+ * alias `grad_output`; the two outputs must not overlap each
+ * other. */
+int nir_op_li_backward(
+    const nir_li_params_t *params, const nir_tensor_t *grad_output,
+    nir_tensor_t *grad_input, nir_tensor_t *grad_prev
+);
+
+/* Backward through y = Wx + b: grad_weight += outer(grad_output,
+ * input), grad_bias += grad_output, grad_input = W^T grad_output.
+ * Weight and bias gradients accumulate (the caller zeroes them);
+ * `grad_bias` may be NULL when the node has no bias. All three
+ * outputs must be disjoint from the inputs and from each other. */
+int nir_op_affine_backward(
+    const nir_affine_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+);
+
+/* Backward through y = Wx: as above without the bias term. */
+int nir_op_linear_backward(
+    const nir_linear_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_input
+);
+
 #endif /* NIR_C_RUNTIME_OPS_H */

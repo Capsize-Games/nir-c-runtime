@@ -722,3 +722,195 @@ nir_tensor_t nir_op_scale(
     }
     return output;
 }
+
+static double surrogate_grad_unchecked(
+    nir_surrogate_kind_t kind, double slope, double x
+) {
+    if (kind == NIR_SURROGATE_FAST_SIGMOID) {
+        double d = 1.0 + fabs(slope * x);
+        return slope / (d * d);
+    }
+    double d = 1.5707963267948966 * slope * x;
+    return (slope / 2.0) / (1.0 + d * d);
+}
+
+int nir_surrogate_grad(
+    nir_surrogate_kind_t kind, float slope, float x, float *out
+) {
+    if (out == NULL || !isfinite(slope) || slope <= 0.0f || isnan(x)) {
+        return 0;
+    }
+    if (kind != NIR_SURROGATE_FAST_SIGMOID &&
+        kind != NIR_SURROGATE_ATAN) {
+        return 0;
+    }
+    *out = (float)surrogate_grad_unchecked(
+        kind, (double)slope, (double)x
+    );
+    return 1;
+}
+
+int nir_op_threshold_backward(
+    const nir_threshold_params_t *params, const nir_tensor_t *membrane,
+    const nir_tensor_t *grad_output, nir_surrogate_kind_t surrogate,
+    float slope, nir_tensor_t *grad_input
+) {
+    float probe;
+    if (params == NULL || !isfinite(params->threshold) ||
+        grad_input == NULL ||
+        !tensor_valid(
+            membrane, membrane != NULL ? membrane->ndim : 0) ||
+        !tensor_valid(
+            grad_output, membrane != NULL ? membrane->ndim : 0) ||
+        !tensor_same_shape(membrane, grad_output) ||
+        !nir_surrogate_grad(surrogate, slope, 0.0f, &probe)) {
+        return 0;
+    }
+    if (tensors_partially_overlap(membrane, grad_input) ||
+        tensors_partially_overlap(grad_output, grad_input) ||
+        !prepare_output(grad_input, membrane->shape, membrane->ndim)) {
+        return 0;
+    }
+    double threshold = (double)params->threshold;
+    double s = (double)slope;
+    for (size_t i = 0; i < membrane->size; i++) {
+        double g = surrogate_grad_unchecked(
+            surrogate, s, (double)membrane->data[i] - threshold
+        );
+        grad_input->data[i] = grad_output->data[i] * (float)g;
+    }
+    return 1;
+}
+
+int nir_op_li_backward(
+    const nir_li_params_t *params, const nir_tensor_t *grad_output,
+    nir_tensor_t *grad_input, nir_tensor_t *grad_prev
+) {
+    if (params == NULL || grad_input == NULL ||
+        !tensor_valid(
+            grad_output, grad_output != NULL ? grad_output->ndim : 0) ||
+        !isfinite(params->tau) || params->tau <= 0.0f ||
+        !isfinite(params->r)) {
+        return 0;
+    }
+    if (tensors_partially_overlap(grad_output, grad_input) ||
+        !prepare_output(
+            grad_input, grad_output->shape, grad_output->ndim)) {
+        return 0;
+    }
+    if (grad_prev != NULL) {
+        if (tensors_overlap(grad_input, grad_prev) ||
+            tensors_partially_overlap(grad_output, grad_prev) ||
+            !prepare_output(
+                grad_prev, grad_output->shape, grad_output->ndim)) {
+            return 0;
+        }
+    }
+    /* Matches nir_op_li_into's zero-order-hold coefficients. */
+    double decay = exp(-1.0 / (double)params->tau);
+    float to_input = (float)((double)params->r * (1.0 - decay));
+    float to_prev = (float)decay;
+    for (size_t i = 0; i < grad_output->size; i++) {
+        grad_input->data[i] = grad_output->data[i] * to_input;
+    }
+    if (grad_prev != NULL) {
+        for (size_t i = 0; i < grad_output->size; i++) {
+            grad_prev->data[i] = grad_output->data[i] * to_prev;
+        }
+    }
+    return 1;
+}
+
+static int affine_backward_into(
+    const float *weight, const float *bias, size_t out_features,
+    size_t in_features, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+) {
+    if (weight == NULL || !tensor_valid(input, 1) ||
+        input->size != in_features ||
+        !tensor_valid(grad_output, 1) ||
+        grad_output->size != out_features || grad_weight == NULL ||
+        grad_input == NULL) {
+        return 0;
+    }
+    size_t weight_count;
+    if (!checked_mul(out_features, in_features, &weight_count)) {
+        return 0;
+    }
+    if ((bias == NULL) != (grad_bias == NULL)) {
+        return 0;
+    }
+    size_t wshape[2] = {out_features, in_features};
+    size_t bshape[1] = {out_features};
+    size_t xshape[1] = {in_features};
+    if (overlaps_output_shape(input, grad_weight, wshape, 2) ||
+        overlaps_output_shape(grad_output, grad_weight, wshape, 2) ||
+        overlaps_output_shape(input, grad_input, xshape, 1) ||
+        overlaps_output_shape(grad_output, grad_input, xshape, 1) ||
+        !prepare_output(grad_weight, wshape, 2) ||
+        !prepare_output(grad_input, xshape, 1)) {
+        return 0;
+    }
+    if (grad_bias != NULL &&
+        (overlaps_output_shape(input, grad_bias, bshape, 1) ||
+         overlaps_output_shape(grad_output, grad_bias, bshape, 1) ||
+         !prepare_output(grad_bias, bshape, 1))) {
+        return 0;
+    }
+    if (tensors_overlap(grad_weight, grad_input) ||
+        (grad_bias != NULL &&
+         (tensors_overlap(grad_weight, grad_bias) ||
+          tensors_overlap(grad_input, grad_bias)))) {
+        return 0;
+    }
+    for (size_t o = 0; o < out_features; o++) {
+        float gy = grad_output->data[o];
+        for (size_t i = 0; i < in_features; i++) {
+            grad_weight->data[o * in_features + i] +=
+                gy * input->data[i];
+        }
+        if (grad_bias != NULL) {
+            grad_bias->data[o] += gy;
+        }
+    }
+    for (size_t i = 0; i < in_features; i++) {
+        float sum = 0.0f;
+        for (size_t o = 0; o < out_features; o++) {
+            sum += weight[o * in_features + i] * grad_output->data[o];
+        }
+        grad_input->data[i] = sum;
+    }
+    return 1;
+}
+
+int nir_op_affine_backward(
+    const nir_affine_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_bias, nir_tensor_t *grad_input
+) {
+    if (params == NULL) {
+        return 0;
+    }
+    return affine_backward_into(
+        params->weight, params->bias, params->out_features,
+        params->in_features, input, grad_output, grad_weight,
+        grad_bias, grad_input
+    );
+}
+
+int nir_op_linear_backward(
+    const nir_linear_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *grad_output, nir_tensor_t *grad_weight,
+    nir_tensor_t *grad_input
+) {
+    if (params == NULL) {
+        return 0;
+    }
+    /* The NIR Linear node carries no bias term. */
+    return affine_backward_into(
+        params->weight, NULL, params->out_features,
+        params->in_features, input, grad_output, grad_weight,
+        NULL, grad_input
+    );
+}

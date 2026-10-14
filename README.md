@@ -74,10 +74,18 @@ target-specific kernels remain future optimization work.
 - [x] Allocation-free fixed-point event-module ABI for bounded, single-output
       temporal detectors (`fixed_event.h`), deterministic guard-state/action
       helpers, and an 8,192-row exhaustive C/Curlee truth-table fingerprint.
+- [x] C-side training math (`train.h`): named surrogate gradients
+      (fast_sigmoid/atan, no silent default) with Threshold/LI/Affine/Linear
+      backward ops, softmax cross-entropy, SGD/Adam optimizers over raw
+      weight buffers, and a local STDP rule. Dataset loading, RNG/encoding,
+      checkpoints, and a graph-level backprop-through-time tape remain
+      future work (see the training epic).
 
 ## Out of scope (for now)
 
-- Training. This is inference-only.
+- Full training pipelines. The loss/optimizer/STDP primitives above are
+  supported; data loading, spike encoding, checkpointing, and graph-level
+  backprop-through-time are not built yet.
 - General Curlee/JOE graph execution. The narrow, allocation-free event ABI is
   integrated as the reference path for
   [curlee#316](https://github.com/w4ffl35/curlee/issues/316); loading arbitrary
