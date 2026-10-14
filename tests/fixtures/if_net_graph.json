@@ -1,0 +1,35 @@
+{
+  "nodes": [
+    {
+      "name": "input",
+      "kind": "Input",
+      "params": {}
+    },
+    {
+      "name": "if1",
+      "kind": "IF",
+      "params": {
+        "r": 1.0,
+        "v_threshold": 1.0,
+        "v_reset": 0.0
+      }
+    },
+    {
+      "name": "output",
+      "kind": "Output",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "source": "input",
+      "target": "if1",
+      "delayed": false
+    },
+    {
+      "source": "if1",
+      "target": "output",
+      "delayed": false
+    }
+  ]
+}

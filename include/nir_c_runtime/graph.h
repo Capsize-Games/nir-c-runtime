@@ -1,12 +1,12 @@
 /* A loaded NIR graph: nodes with typed parameters, plus edges.
  *
- * Scoped to exactly the node kinds spikeforge's conv_net topology
- * emits (see the reference interpreter this mirrors:
+ * Scoped to exactly the node kinds spikeforge's topologies emit
+ * (see the reference interpreter this mirrors:
  * spikeforge/nir_bridge/{ops_neuron,ops_linear}.py) -- Input, Output,
- * Conv2d, Affine, Flatten, AvgPool2d, SumPool2d, LI, Threshold,
- * Scale, Delay. LIF/IF/CubaLIF/Conv1d/Linear are not implemented;
- * loading a graph that uses them fails with a named error rather than
- * silently misinterpreting them.
+ * Conv2d, Conv1d, Affine, Linear, Flatten, AvgPool2d, SumPool2d, LI,
+ * LIF, IF, CubaLIF, Threshold, Scale, Delay. Any other kind fails
+ * graph load with a named error rather than being silently
+ * reinterpreted.
  */
 #ifndef NIR_C_RUNTIME_GRAPH_H
 #define NIR_C_RUNTIME_GRAPH_H
@@ -26,7 +26,12 @@ typedef enum {
     NIR_NODE_LI,
     NIR_NODE_THRESHOLD,
     NIR_NODE_SCALE,
-    NIR_NODE_DELAY
+    NIR_NODE_DELAY,
+    NIR_NODE_LIF,
+    NIR_NODE_IF,
+    NIR_NODE_CUBALIF,
+    NIR_NODE_CONV1D,
+    NIR_NODE_LINEAR
 } nir_node_kind_t;
 
 typedef struct {
@@ -51,6 +56,30 @@ typedef struct {
 } nir_li_params_t;
 
 typedef struct {
+    size_t out_channels, in_channels, kernel;
+    float *weight; /* dequantized [out][in][kernel] */
+    float *bias;   /* [out_channels], NULL if the node has no bias */
+    int stride, padding, dilation;
+} nir_conv1d_params_t;
+
+typedef struct {
+    size_t out_features, in_features;
+    float *weight; /* dequantized [out_features][in_features] */
+} nir_linear_params_t;
+
+typedef struct {
+    float tau, r, v_leak, v_threshold, v_reset;
+} nir_lif_params_t;
+
+typedef struct {
+    float r, v_threshold, v_reset;
+} nir_if_params_t;
+
+typedef struct {
+    float tau_syn, tau_mem, r, v_leak, v_threshold, v_reset, w_in;
+} nir_cuba_params_t;
+
+typedef struct {
     float threshold;
 } nir_threshold_params_t;
 
@@ -68,6 +97,11 @@ typedef struct {
         nir_li_params_t li;
         nir_threshold_params_t threshold;
         nir_scale_params_t scale;
+        nir_lif_params_t lif;
+        nir_if_params_t if_;
+        nir_cuba_params_t cuba;
+        nir_conv1d_params_t conv1d;
+        nir_linear_params_t linear;
     } params;
 } nir_node_t;
 

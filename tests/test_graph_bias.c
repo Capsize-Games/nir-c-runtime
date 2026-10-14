@@ -24,19 +24,38 @@ static const bias_case_t CASES[] = {
     {"conv-exact", "Conv2d", ",\"bias\":[0.5,-0.5]", 1},
     {"conv-omitted", "Conv2d", "", 1},
     {"conv-null", "Conv2d", ",\"bias\":null", 1},
+    {"conv1d-short", "Conv1d", ",\"bias\":[0]", 0},
+    {"conv1d-long", "Conv1d", ",\"bias\":[0,0,0]", 0},
+    {"conv1d-empty", "Conv1d", ",\"bias\":[]", 0},
+    {"conv1d-invalid", "Conv1d", ",\"bias\":\"invalid\"", 0},
+    {"conv1d-exact", "Conv1d", ",\"bias\":[0.5,-0.5]", 1},
+    {"conv1d-omitted", "Conv1d", "", 1},
+    {"conv1d-null", "Conv1d", ",\"bias\":null", 1},
 };
 
 static void check_accepted_output(const nir_node_t *node) {
     size_t shape[] = {1, 1, 1};
-    int affine = node->kind == NIR_NODE_AFFINE;
-    nir_tensor_t input = nir_tensor_alloc(shape, affine ? 1 : 3);
+    size_t ndim = 3;
+    if (node->kind == NIR_NODE_AFFINE) {
+        ndim = 1;
+    } else if (node->kind == NIR_NODE_CONV1D) {
+        ndim = 2;
+    }
+    nir_tensor_t input = nir_tensor_alloc(shape, ndim);
     CHECK(input.data != NULL);
     input.data[0] = 3;
-    nir_tensor_t output = affine
-        ? nir_op_affine(&node->params.affine, &input)
-        : nir_op_conv2d(&node->params.conv2d, &input);
-    const float *bias = affine
-        ? node->params.affine.bias : node->params.conv2d.bias;
+    nir_tensor_t output;
+    const float *bias;
+    if (node->kind == NIR_NODE_AFFINE) {
+        output = nir_op_affine(&node->params.affine, &input);
+        bias = node->params.affine.bias;
+    } else if (node->kind == NIR_NODE_CONV1D) {
+        output = nir_op_conv1d(&node->params.conv1d, &input);
+        bias = node->params.conv1d.bias;
+    } else {
+        output = nir_op_conv2d(&node->params.conv2d, &input);
+        bias = node->params.conv2d.bias;
+    }
     CHECK(output.data != NULL && output.size == 2);
     CHECK_NEAR(output.data[0], 3 + (bias ? 0.5 : 0), 1e-6);
     CHECK_NEAR(output.data[1], 6 - (bias ? 0.5 : 0), 1e-6);
@@ -46,13 +65,19 @@ static void check_accepted_output(const nir_node_t *node) {
 
 static void check_case(const bias_case_t *test) {
     char text[1024];
-    const char *weight = strcmp(test->kind, "Affine") == 0
-        ? "[[1],[2]]" : "[[[[1]]],[[[2]]]]";
+    const char *weight = "[[[[1]]],[[[2]]]]";
+    const char *geometry =
+        "\"stride\":[1,1],\"padding\":[0,0],\"dilation\":[1,1]";
+    if (strcmp(test->kind, "Affine") == 0) {
+        weight = "[[1],[2]]";
+    } else if (strcmp(test->kind, "Conv1d") == 0) {
+        weight = "[[[1]],[[2]]]";
+        geometry = "\"stride\":1,\"padding\":0,\"dilation\":1,\"groups\":1";
+    }
     snprintf(text, sizeof(text),
         "{\"nodes\":[{\"name\":\"layer\",\"kind\":\"%s\","
-        "\"params\":{\"weight\":%s%s,\"stride\":[1,1],"
-        "\"padding\":[0,0],\"dilation\":[1,1]}}],\"edges\":[]}",
-        test->kind, weight, test->bias);
+        "\"params\":{\"weight\":%s%s,%s}}],\"edges\":[]}",
+        test->kind, weight, test->bias, geometry);
     char *error = NULL;
     json_value_t *json = json_parse(text, &error);
     CHECK(json != NULL && error == NULL);

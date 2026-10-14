@@ -154,6 +154,51 @@ static float *parse_floats_2d(
     return out;
 }
 
+/* Flatten a raw or quantized 3D array row-major for Conv1d weights. */
+static float *parse_floats_3d(
+    const json_value_t *array, size_t *d0, size_t *d1, size_t *d2
+) {
+    weight_view_t view;
+    if (!weight_view(array, &view)) {
+        return NULL;
+    }
+    size_t a = json_array_length(view.data);
+    if (view.data->type != JSON_ARRAY) return NULL;
+    const json_value_t *l1 = a > 0 ? json_array_get(view.data, 0) : NULL;
+    size_t b = json_array_length(l1);
+    const json_value_t *l2 = b > 0 ? json_array_get(l1, 0) : NULL;
+    size_t c = json_array_length(l2);
+    size_t total = a;
+    if (!checked_product(&total, b) || !checked_product(&total, c) ||
+        total > (size_t)-1 / sizeof(float))
+        return NULL;
+    float *out = (float *)malloc((total == 0 ? 1 : total) * sizeof(float));
+    if (out == NULL) {
+        return NULL;
+    }
+    size_t index = 0;
+    for (size_t i = 0; i < a; i++) {
+        const json_value_t *dim1 = json_array_get(view.data, i);
+        if (dim1 == NULL || dim1->type != JSON_ARRAY ||
+            json_array_length(dim1) != b) { free(out); return NULL; }
+        for (size_t j = 0; j < b; j++) {
+            const json_value_t *dim2 = json_array_get(dim1, j);
+            if (dim2 == NULL || dim2->type != JSON_ARRAY ||
+                json_array_length(dim2) != c) { free(out); return NULL; }
+            for (size_t k = 0; k < c; k++) {
+                const json_value_t *item = json_array_get(dim2, k);
+                if (!decode_input_valid(&view, item)) { free(out); return NULL; }
+                out[index++] = decode_weight(&view, item);
+                if (!isfinite(out[index - 1])) { free(out); return NULL; }
+            }
+        }
+    }
+    *d0 = a;
+    *d1 = b;
+    *d2 = c;
+    return out;
+}
+
 /* Flatten a raw or quantized 4D array row-major for Conv2d weights. */
 static float *parse_floats_4d(
     const json_value_t *array, size_t *d0, size_t *d1, size_t *d2, size_t *d3
@@ -261,6 +306,77 @@ static int load_conv2d(
     return 1;
 }
 
+static int int_at(const json_value_t *params, const char *key, int *out) {
+    const json_value_t *value = json_object_get(params, key);
+    if (!valid_number(value) || trunc(value->as.number) != value->as.number ||
+        value->as.number < 0 || value->as.number > INT_MAX) return 0;
+    *out = (int)value->as.number;
+    return 1;
+}
+
+static int load_conv1d(
+    const json_value_t *params, nir_node_t *node, char **error
+) {
+    nir_conv1d_params_t *p = &node->params.conv1d;
+    const json_value_t *weight = json_object_get(params, "weight");
+    p->weight = parse_floats_3d(
+        weight, &p->out_channels, &p->in_channels, &p->kernel
+    );
+    if (p->weight == NULL || p->out_channels == 0 || p->in_channels == 0 ||
+        p->kernel == 0) {
+        set_error(error, "Conv1d weight must be a nonempty rectangular 3D numeric array", NULL);
+        return 0;
+    }
+    const json_value_t *bias = json_object_get(params, "bias");
+    if (bias != NULL && bias->type != JSON_NULL) {
+        size_t bias_count = 0;
+        p->bias = parse_floats_1d(bias, &bias_count);
+        if (p->bias == NULL || bias_count != p->out_channels) {
+            set_error(error,
+                "Conv1d bias must contain one value per output channel",
+                NULL);
+            return 0;
+        }
+    } else {
+        p->bias = NULL;
+    }
+    const json_value_t *padding = json_object_get(params, "padding");
+    if (padding != NULL && padding->type == JSON_STRING) {
+        set_error(error, "Conv1d padding must be an integer; \"same\" and \"valid\" padding are not supported", NULL);
+        return 0;
+    }
+    int groups = 1;
+    const json_value_t *groups_json = json_object_get(params, "groups");
+    if (groups_json != NULL && !int_at(params, "groups", &groups)) {
+        set_error(error, "Conv1d groups must be a nonnegative integer", NULL);
+        return 0;
+    }
+    if (groups != 1) {
+        set_error(error, "Conv1d groups must be 1; grouped convolution is not supported", NULL);
+        return 0;
+    }
+    if (!int_at(params, "stride", &p->stride) || p->stride == 0 ||
+        !int_at(params, "padding", &p->padding) ||
+        !int_at(params, "dilation", &p->dilation) || p->dilation == 0) {
+        set_error(error, "Conv1d stride/dilation must be positive integers and padding a nonnegative integer", NULL);
+        return 0;
+    }
+    return 1;
+}
+
+static int load_linear(
+    const json_value_t *params, nir_node_t *node, char **error
+) {
+    nir_linear_params_t *p = &node->params.linear;
+    const json_value_t *weight = json_object_get(params, "weight");
+    p->weight = parse_floats_2d(weight, &p->out_features, &p->in_features);
+    if (p->weight == NULL || p->out_features == 0 || p->in_features == 0) {
+        set_error(error, "Linear weight must be a nonempty rectangular 2D numeric array", NULL);
+        return 0;
+    }
+    return 1;
+}
+
 static int load_affine(
     const json_value_t *params, nir_node_t *node, char **error
 ) {
@@ -306,6 +422,36 @@ static int load_li(const json_value_t *params, nir_node_t *node) {
         parameter_number(params, "v_leak", 0.0f, &node->params.li.v_leak);
 }
 
+static int load_lif(const json_value_t *params, nir_node_t *node) {
+    nir_lif_params_t *p = &node->params.lif;
+    return parameter_number(params, "tau", 1.0f, &p->tau) &&
+        p->tau > 0.0f &&
+        parameter_number(params, "r", 1.0f, &p->r) &&
+        parameter_number(params, "v_leak", 0.0f, &p->v_leak) &&
+        parameter_number(params, "v_threshold", 1.0f, &p->v_threshold) &&
+        parameter_number(params, "v_reset", 0.0f, &p->v_reset);
+}
+
+static int load_if(const json_value_t *params, nir_node_t *node) {
+    nir_if_params_t *p = &node->params.if_;
+    return parameter_number(params, "r", 1.0f, &p->r) &&
+        parameter_number(params, "v_threshold", 1.0f, &p->v_threshold) &&
+        parameter_number(params, "v_reset", 0.0f, &p->v_reset);
+}
+
+static int load_cuba(const json_value_t *params, nir_node_t *node) {
+    nir_cuba_params_t *p = &node->params.cuba;
+    return parameter_number(params, "tau_syn", 1.0f, &p->tau_syn) &&
+        p->tau_syn > 0.0f &&
+        parameter_number(params, "tau_mem", 1.0f, &p->tau_mem) &&
+        p->tau_mem > 0.0f &&
+        parameter_number(params, "r", 1.0f, &p->r) &&
+        parameter_number(params, "v_leak", 0.0f, &p->v_leak) &&
+        parameter_number(params, "v_threshold", 1.0f, &p->v_threshold) &&
+        parameter_number(params, "v_reset", 0.0f, &p->v_reset) &&
+        parameter_number(params, "w_in", 1.0f, &p->w_in);
+}
+
 typedef struct {
     const char *name;
     nir_node_kind_t kind;
@@ -323,6 +469,11 @@ static const kind_entry_t KIND_TABLE[] = {
     {"Threshold", NIR_NODE_THRESHOLD},
     {"Scale", NIR_NODE_SCALE},
     {"Delay", NIR_NODE_DELAY},
+    {"LIF", NIR_NODE_LIF},
+    {"IF", NIR_NODE_IF},
+    {"CubaLIF", NIR_NODE_CUBALIF},
+    {"Conv1d", NIR_NODE_CONV1D},
+    {"Linear", NIR_NODE_LINEAR},
 };
 
 static int resolve_kind(const char *text, nir_node_kind_t *kind) {
@@ -359,7 +510,9 @@ static int load_node(
     const json_value_t *params = json_object_get(node_json, "params");
     switch (node->kind) {
         case NIR_NODE_CONV2D: return load_conv2d(params, node, error);
+        case NIR_NODE_CONV1D: return load_conv1d(params, node, error);
         case NIR_NODE_AFFINE: return load_affine(params, node, error);
+        case NIR_NODE_LINEAR: return load_linear(params, node, error);
         case NIR_NODE_AVGPOOL2D:
         case NIR_NODE_SUMPOOL2D:
             if (!load_pool2d(params, node)) {
@@ -370,6 +523,24 @@ static int load_node(
         case NIR_NODE_LI:
             if (!load_li(params, node)) {
                 set_error(error, "LI tau must be positive and parameters finite numbers", NULL);
+                return 0;
+            }
+            return 1;
+        case NIR_NODE_LIF:
+            if (!load_lif(params, node)) {
+                set_error(error, "LIF tau must be positive and parameters finite numbers", NULL);
+                return 0;
+            }
+            return 1;
+        case NIR_NODE_IF:
+            if (!load_if(params, node)) {
+                set_error(error, "IF parameters must be finite numbers", NULL);
+                return 0;
+            }
+            return 1;
+        case NIR_NODE_CUBALIF:
+            if (!load_cuba(params, node)) {
+                set_error(error, "CubaLIF time constants must be positive and parameters finite numbers", NULL);
                 return 0;
             }
             return 1;
@@ -403,9 +574,14 @@ static void free_node(nir_node_t *node) {
     if (node->kind == NIR_NODE_CONV2D) {
         free(node->params.conv2d.weight);
         free(node->params.conv2d.bias);
+    } else if (node->kind == NIR_NODE_CONV1D) {
+        free(node->params.conv1d.weight);
+        free(node->params.conv1d.bias);
     } else if (node->kind == NIR_NODE_AFFINE) {
         free(node->params.affine.weight);
         free(node->params.affine.bias);
+    } else if (node->kind == NIR_NODE_LINEAR) {
+        free(node->params.linear.weight);
     }
     memset(node, 0, sizeof(*node));
 }

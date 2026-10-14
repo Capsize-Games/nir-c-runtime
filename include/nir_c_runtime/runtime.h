@@ -18,8 +18,13 @@
 typedef struct {
     const nir_graph_t *graph;
     size_t *order; /* topological order, node indices, length node_count */
-    nir_tensor_t *li_state;    /* previous membrane, valid for LI nodes */
+    /* Previous membrane, valid for LI/LIF/IF/CubaLIF nodes (the
+     * post-reset stored membrane for the spiking kinds). */
+    nir_tensor_t *li_state;
     int *li_primed;
+    /* Previous synaptic current, valid for CubaLIF nodes; primes
+     * together with the membrane, so it shares `li_primed`. */
+    nir_tensor_t *syn_state;
     nir_tensor_t *delay_buffer; /* buffered value, valid for Delay nodes */
     int *delay_primed;
 } nir_runtime_t;
@@ -28,11 +33,14 @@ typedef struct {
  * entry must be bound with `nir_tensor_bind` before the first run; entries
  * need capacity for the largest tensor that node can produce. The arrays and
  * flag buffers must each contain at least `runtime->graph->node_count`
- * entries. `sum` and `total` are scratch/output tensors. */
+ * entries. `sum` and `total` are scratch/output tensors. `syn_state` is
+ * only required when the graph contains a CubaLIF node; otherwise it may
+ * be NULL. */
 typedef struct {
     nir_tensor_t *values;
     nir_tensor_t *li_state;
     int *li_primed;
+    nir_tensor_t *syn_state;
     nir_tensor_t *delay_buffer;
     int *delay_primed;
     nir_tensor_t *sum;

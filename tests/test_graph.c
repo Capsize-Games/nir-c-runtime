@@ -76,7 +76,18 @@ static void test_malformed_graph_parameters_are_rejected(void) {
         "{\"nodes\":{},\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"\",\"kind\":\"Input\",\"params\":{}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Affine\",\"params\":{\"weight\":{\"data\":[[128]],\"dtype\":\"int8\",\"scale\":1,\"zero_point\":0},\"bias\":[0]}}],\"edges\":[]}",
-        "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Affine\",\"params\":{\"weight\":{\"data\":[[1.5]],\"dtype\":\"uint8\",\"scale\":1,\"zero_point\":0},\"bias\":[0]}}],\"edges\":[]}"
+        "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Affine\",\"params\":{\"weight\":{\"data\":[[1.5]],\"dtype\":\"uint8\",\"scale\":1,\"zero_point\":0},\"bias\":[0]}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"tau\":0}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"tau\":\"slow\"}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"IF\",\"params\":{\"r\":[]}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"CubaLIF\",\"params\":{\"tau_syn\":0,\"tau_mem\":1}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"CubaLIF\",\"params\":{\"tau_mem\":-1}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"c\",\"kind\":\"Conv1d\",\"params\":{\"weight\":[[[1,2]],[[3]]],\"stride\":1,\"padding\":0,\"dilation\":1}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"c\",\"kind\":\"Conv1d\",\"params\":{\"weight\":[[[1]]],\"stride\":1,\"padding\":\"same\",\"dilation\":1}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"c\",\"kind\":\"Conv1d\",\"params\":{\"weight\":[[[1]]],\"stride\":1,\"padding\":0,\"dilation\":1,\"groups\":2}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"c\",\"kind\":\"Conv1d\",\"params\":{\"weight\":[[[1]]],\"stride\":0,\"padding\":0,\"dilation\":1}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Linear\",\"params\":{\"weight\":[]}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Linear\",\"params\":{\"weight\":[[1],[2,3]]}}],\"edges\":[]}"
     };
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
         char *error = NULL;
@@ -92,10 +103,54 @@ static void test_malformed_graph_parameters_are_rejected(void) {
     }
 }
 
+static void test_unsupported_kind_names_kind(void) {
+    const char *text =
+        "{\"nodes\":[{\"name\":\"m\",\"kind\":\"Mystery\",\"params\":{}}],"
+        "\"edges\":[]}";
+    char *error = NULL;
+    json_value_t *json = json_parse(text, &error);
+    CHECK(json != NULL && error == NULL);
+    nir_graph_t graph;
+    CHECK(!nir_graph_load(json, &graph, &error));
+    CHECK(error != NULL && strstr(error, "unsupported node kind") != NULL);
+    CHECK(strstr(error, "Mystery") != NULL);
+    CHECK(graph.nodes == NULL && graph.node_count == 0);
+    nir_graph_free(&graph);
+    json_free(json);
+    free(error);
+}
+
+static void test_new_kinds_load_with_defaults(void) {
+    const char *text =
+        "{\"nodes\":["
+        "{\"name\":\"a\",\"kind\":\"LIF\",\"params\":{}},"
+        "{\"name\":\"b\",\"kind\":\"IF\",\"params\":{}},"
+        "{\"name\":\"c\",\"kind\":\"CubaLIF\",\"params\":{}},"
+        "{\"name\":\"d\",\"kind\":\"Linear\",\"params\":{\"weight\":[[1]]}},"
+        "{\"name\":\"e\",\"kind\":\"Conv1d\",\"params\":{\"weight\":[[[1]]],"
+        "\"stride\":1,\"padding\":0,\"dilation\":1}}],\"edges\":[]}";
+    char *error = NULL;
+    json_value_t *json = json_parse(text, &error);
+    CHECK(json != NULL && error == NULL);
+    nir_graph_t graph;
+    CHECK(nir_graph_load(json, &graph, &error));
+    CHECK(error == NULL && graph.node_count == 5);
+    CHECK(graph.nodes[0].kind == NIR_NODE_LIF);
+    CHECK(graph.nodes[1].kind == NIR_NODE_IF);
+    CHECK(graph.nodes[2].kind == NIR_NODE_CUBALIF);
+    CHECK(graph.nodes[3].kind == NIR_NODE_LINEAR);
+    CHECK(graph.nodes[4].kind == NIR_NODE_CONV1D);
+    CHECK(graph.nodes[4].params.conv1d.bias == NULL);
+    nir_graph_free(&graph);
+    json_free(json);
+}
+
 int main(void) {
     test_invalid_endpoints_are_rejected();
     test_unknown_string_endpoint_is_rejected();
     test_valid_edge_loads();
     test_malformed_graph_parameters_are_rejected();
+    test_unsupported_kind_names_kind();
+    test_new_kinds_load_with_defaults();
     return 0;
 }

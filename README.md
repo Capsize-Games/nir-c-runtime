@@ -29,20 +29,21 @@ NIR-exported spikeforge model, not tied to one use case.
 ## Status
 
 Working MVP. Loads a `graph_summary()`-shaped NIR JSON export and runs
-inference for the exact node kinds spikeforge's `conv_net` topology emits:
-`Input`, `Conv2d`, `Affine`, `Flatten`, `AvgPool2d`, `SumPool2d`, `LI`,
-`Threshold`, `Scale`, `Delay`, `Output`. `LIF`/`IF`/`CubaLIF`/`Conv1d`/
-`Linear` are not implemented; loading a graph that uses them fails with a
-named "unsupported node kind" error rather than silently misinterpreting
-them.
+inference for the node kinds spikeforge's topologies emit: `Input`,
+`Conv2d`, `Conv1d`, `Affine`, `Linear`, `Flatten`, `AvgPool2d`,
+`SumPool2d`, `LI`, `LIF`, `IF`, `CubaLIF`, `Threshold`, `Scale`,
+`Delay`, `Output`. Any other kind fails graph load with a named
+"unsupported node kind" error rather than being silently misinterpreted.
 
-**Validated, not just "it runs":** `tests/test_conv_net.c` checks a small
-topology against spikeforge's own reference `NirInterpreter` output
-(`tools/export_fixture.py` produces both from one run). It was also checked
-by hand against a real trained 128×128, 2-channel, 11-class `conv_net`
-checkpoint (not committed here) — **bit-exact match** with the Python
-reference interpreter (max abs diff `0.0`). All four test executables also
-pass clean under AddressSanitizer + UBSan.
+**Validated, not just "it runs":** `tests/test_conv_net.c` and
+`tests/test_neuron_kinds.c` check small topologies against spikeforge's own
+reference `NirInterpreter` output (`tools/export_fixture.py` produces both
+from one run) — **bit-exact matches** with the Python reference
+interpreter (max abs diff `0.0` on every committed fixture, through both
+the allocating and the workspace runtimes). The `conv_net` topology was
+also checked by hand against a real trained 128×128, 2-channel, 11-class
+checkpoint (not committed here) with the same bit-exact result. Every test
+executable also passes clean under AddressSanitizer + UBSan.
 
 **Known limitation:** convolution uses portable 4×4 output tiles but is not
 yet SIMD-vectorized. On the 128×128 real-model check above it took ~148ms for
