@@ -1,0 +1,51 @@
+{
+  "nodes": [
+    {
+      "name": "input",
+      "kind": "Input",
+      "params": {}
+    },
+    {
+      "name": "fc1",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [0.5, -0.5],
+          [0.25, 0.75]
+        ],
+        "bias": [0.0, 0.1]
+      }
+    },
+    {
+      "name": "neu",
+      "kind": "IF",
+      "params": {
+        "r": 2.0,
+        "v_threshold": 1.0,
+        "v_reset": 0.0
+      }
+    },
+    {
+      "name": "fc2",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [1.0, -1.0],
+          [-0.5, 0.5]
+        ],
+        "bias": [0.1, -0.1]
+      }
+    },
+    {
+      "name": "output",
+      "kind": "Output",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {"source": "input", "target": "fc1", "delayed": false},
+    {"source": "fc1", "target": "neu", "delayed": false},
+    {"source": "neu", "target": "fc2", "delayed": false},
+    {"source": "fc2", "target": "output", "delayed": false}
+  ]
+}
