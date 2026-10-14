@@ -1,0 +1,81 @@
+{
+  "nodes": [
+    {
+      "name": "input",
+      "kind": "Input",
+      "params": {}
+    },
+    {
+      "name": "conv",
+      "kind": "Conv1d",
+      "params": {
+        "weight": [
+          [
+            [0.5, -0.25],
+            [0.75, 0.125]
+          ],
+          [
+            [-0.5, 0.5],
+            [0.25, -0.75]
+          ],
+          [
+            [0.125, 0.375],
+            [-0.625, 0.875]
+          ]
+        ],
+        "bias": [0.1, -0.1, 0.0],
+        "stride": 1,
+        "padding": 0,
+        "dilation": 1
+      }
+    },
+    {
+      "name": "fl",
+      "kind": "Flatten",
+      "params": {}
+    },
+    {
+      "name": "lin",
+      "kind": "Linear",
+      "params": {
+        "weight": [
+          [-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, -0.75, -0.5],
+          [-0.25, 0.0, 0.25, 0.5, 0.75, -0.75, -0.5, -0.25, 0.0],
+          [0.25, 0.5, 0.75, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5],
+          [0.75, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, -0.75]
+        ]
+      }
+    },
+    {
+      "name": "sc",
+      "kind": "Scale",
+      "params": {
+        "scale": 0.5
+      }
+    },
+    {
+      "name": "fc",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [-1.0, -0.5, 0.0, 0.5],
+          [1.0, -1.0, -0.5, 0.0]
+        ],
+        "bias": [0.25, -0.25]
+      }
+    },
+    {
+      "name": "output",
+      "kind": "Output",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {"source": "input", "target": "conv", "delayed": false},
+    {"source": "conv", "target": "fl", "delayed": false},
+    {"source": "fl", "target": "lin", "delayed": false},
+    {"source": "lin", "target": "sc", "delayed": false},
+    {"source": "sc", "target": "fc", "delayed": false},
+    {"source": "fc", "target": "output", "delayed": false}
+  ]
+}

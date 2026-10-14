@@ -1,0 +1,86 @@
+{
+  "nodes": [
+    {
+      "name": "input",
+      "kind": "Input",
+      "params": {}
+    },
+    {
+      "name": "fc1",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [0.5, -0.25],
+          [0.75, 0.125],
+          [-0.5, 0.5]
+        ],
+        "bias": [0.1, -0.1, 0.0]
+      }
+    },
+    {
+      "name": "thr",
+      "kind": "Threshold",
+      "params": {
+        "threshold": 0.5
+      }
+    },
+    {
+      "name": "lif",
+      "kind": "LIF",
+      "params": {
+        "tau": 2.0,
+        "r": 1.0,
+        "v_leak": 0.0,
+        "v_threshold": 1.0,
+        "v_reset": 0.0
+      }
+    },
+    {
+      "name": "ifn",
+      "kind": "IF",
+      "params": {
+        "r": 1.0,
+        "v_threshold": 1.0,
+        "v_reset": 0.0
+      }
+    },
+    {
+      "name": "cuba",
+      "kind": "CubaLIF",
+      "params": {
+        "tau_syn": 2.0,
+        "tau_mem": 3.0,
+        "r": 1.0,
+        "v_leak": 0.0,
+        "v_threshold": 1.0,
+        "v_reset": 0.0,
+        "w_in": 1.0
+      }
+    },
+    {
+      "name": "fc2",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [0.4, 0.3, -0.2],
+          [0.1, -0.4, 0.6]
+        ],
+        "bias": [0.0, 0.05]
+      }
+    },
+    {
+      "name": "output",
+      "kind": "Output",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {"source": "input", "target": "fc1", "delayed": false},
+    {"source": "fc1", "target": "thr", "delayed": false},
+    {"source": "thr", "target": "lif", "delayed": false},
+    {"source": "lif", "target": "ifn", "delayed": false},
+    {"source": "ifn", "target": "cuba", "delayed": false},
+    {"source": "cuba", "target": "fc2", "delayed": false},
+    {"source": "fc2", "target": "output", "delayed": false}
+  ]
+}

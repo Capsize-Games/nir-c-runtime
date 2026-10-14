@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    {
+      "name": "input",
+      "kind": "Input",
+      "params": {}
+    },
+    {
+      "name": "dly",
+      "kind": "Delay",
+      "params": {}
+    },
+    {
+      "name": "fc1",
+      "kind": "Affine",
+      "params": {
+        "weight": [[2.0]],
+        "bias": [0.5]
+      }
+    },
+    {
+      "name": "output",
+      "kind": "Output",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {"source": "input", "target": "dly", "delayed": false},
+    {"source": "dly", "target": "fc1", "delayed": false},
+    {"source": "fc1", "target": "output", "delayed": false}
+  ]
+}

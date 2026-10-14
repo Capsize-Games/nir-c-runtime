@@ -1,0 +1,69 @@
+{
+  "nodes": [
+    {
+      "name": "input",
+      "kind": "Input",
+      "params": {}
+    },
+    {
+      "name": "fc1",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [0.5, -0.5],
+          [0.25, 0.75]
+        ],
+        "bias": [0.0, 0.1]
+      }
+    },
+    {
+      "name": "thr",
+      "kind": "Threshold",
+      "params": {
+        "threshold": 0.5
+      }
+    },
+    {
+      "name": "lif",
+      "kind": "LIF",
+      "params": {
+        "tau": 2.0,
+        "r": 3.0,
+        "v_leak": 0.0,
+        "v_threshold": 1.0,
+        "v_reset": 0.0
+      }
+    },
+    {
+      "name": "sc",
+      "kind": "Scale",
+      "params": {
+        "scale": 2.0
+      }
+    },
+    {
+      "name": "fc2",
+      "kind": "Affine",
+      "params": {
+        "weight": [
+          [1.0, -1.0],
+          [-0.5, 0.5]
+        ],
+        "bias": [0.1, -0.1]
+      }
+    },
+    {
+      "name": "output",
+      "kind": "Output",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {"source": "input", "target": "fc1", "delayed": false},
+    {"source": "fc1", "target": "thr", "delayed": false},
+    {"source": "thr", "target": "lif", "delayed": false},
+    {"source": "lif", "target": "sc", "delayed": false},
+    {"source": "sc", "target": "fc2", "delayed": false},
+    {"source": "fc2", "target": "output", "delayed": false}
+  ]
+}
