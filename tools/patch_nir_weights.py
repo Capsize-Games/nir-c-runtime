@@ -43,10 +43,12 @@ def patch(summary: dict, checkpoint: dict) -> dict:
     """Return a copy of `summary` with checkpoint weights applied."""
     if checkpoint.get("format") != "spikeforge-c-checkpoint":
         raise ValueError("not a spikeforge-c-checkpoint document")
-    if checkpoint.get("version") != 1:
+    if checkpoint.get("version") not in (1, 2):
         raise ValueError(
             f"unsupported checkpoint version {checkpoint.get('version')!r}"
         )
+    # v2 optimizers are intentionally ignored: the reverse bridge
+    # carries weights only.
     nodes = {node["name"]: node for node in summary["nodes"]}
     patched = 0
     for entry in checkpoint["nodes"]:
