@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "nir_c_runtime/json.h"
+#include "nir_c_runtime/train.h"
 
 struct nir_json_writer {
     char *text;
@@ -466,8 +467,192 @@ static int write_node(nir_json_writer_t *w, const nir_node_t *node) {
         nir_json_end(w);
 }
 
-char *nir_checkpoint_dumps(
+/* Validate caller optimizer entries against the graph: known
+ * weighted nodes, no duplicates, live-kind weight set with
+ * matching buffer counts, inactive-kind pointers NULL. */
+static int validate_opt_entries(
+    const nir_graph_t *graph, const nir_checkpoint_opt_t *opts,
+    size_t opt_count, char **error
+) {
+    if (opt_count == 0) {
+        return 1;
+    }
+    if (opts == NULL) {
+        set_error(error, "checkpoint optimizer entry needs a node");
+        return 0;
+    }
+    for (size_t i = 0; i < opt_count; i++) {
+        const nir_checkpoint_opt_t *o = &opts[i];
+        if (o->node == NULL) {
+            set_error(error, "checkpoint optimizer entry needs a node");
+            return 0;
+        }
+        if (o->kind != NIR_CHECKPOINT_OPT_SGD &&
+            o->kind != NIR_CHECKPOINT_OPT_ADAM) {
+            set_error(error, "checkpoint optimizer entry is invalid");
+            return 0;
+        }
+        if (o->kind == NIR_CHECKPOINT_OPT_SGD) {
+            if (o->sgd_weight == NULL) {
+                set_error(
+                    error, "checkpoint optimizer entry needs state"
+                );
+                return 0;
+            }
+            if (o->adam_weight != NULL || o->adam_bias != NULL) {
+                set_error(
+                    error, "checkpoint optimizer entry mixes kinds"
+                );
+                return 0;
+            }
+        } else {
+            if (o->adam_weight == NULL) {
+                set_error(
+                    error, "checkpoint optimizer entry needs state"
+                );
+                return 0;
+            }
+            if (o->sgd_weight != NULL || o->sgd_bias != NULL) {
+                set_error(
+                    error, "checkpoint optimizer entry mixes kinds"
+                );
+                return 0;
+            }
+        }
+        size_t index = nir_graph_find(graph, o->node);
+        if (index == (size_t)-1) {
+            set_error(
+                error, "checkpoint optimizer names an unknown node"
+            );
+            return 0;
+        }
+        const float *w = NULL;
+        const float *b = NULL;
+        size_t wn = 0;
+        size_t bn = 0;
+        if (!weight_shapes(&graph->nodes[index], &w, &wn, &b, &bn)) {
+            set_error(
+                error, "checkpoint optimizer targets an unweighted node"
+            );
+            return 0;
+        }
+        if (o->kind == NIR_CHECKPOINT_OPT_SGD) {
+            if (o->sgd_weight->velocity == NULL ||
+                o->sgd_weight->count != wn) {
+                set_error(
+                    error,
+                    "checkpoint optimizer state does not match graph"
+                );
+                return 0;
+            }
+            if (o->sgd_bias != NULL &&
+                (b == NULL || o->sgd_bias->velocity == NULL ||
+                    o->sgd_bias->count != bn)) {
+                set_error(
+                    error,
+                    "checkpoint optimizer state does not match graph"
+                );
+                return 0;
+            }
+        } else {
+            if (o->adam_weight->m == NULL || o->adam_weight->v == NULL ||
+                o->adam_weight->count != wn) {
+                set_error(
+                    error,
+                    "checkpoint optimizer state does not match graph"
+                );
+                return 0;
+            }
+            if (o->adam_bias != NULL &&
+                (b == NULL || o->adam_bias->m == NULL ||
+                    o->adam_bias->v == NULL ||
+                    o->adam_bias->count != bn)) {
+                set_error(
+                    error,
+                    "checkpoint optimizer state does not match graph"
+                );
+                return 0;
+            }
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(opts[j].node, o->node) == 0) {
+                set_error(
+                    error, "checkpoint optimizer entry is duplicated"
+                );
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int write_sgd_entry(
+    nir_json_writer_t *w, const nir_checkpoint_opt_t *o
+) {
+    return nir_json_key(w, "kind") && nir_json_string(w, "sgd") &&
+        nir_json_key(w, "velocity") &&
+        write_floats(
+            w, o->sgd_weight->velocity, o->sgd_weight->count
+        ) &&
+        (o->sgd_bias == NULL ||
+            (nir_json_key(w, "velocity_bias") &&
+                write_floats(
+                    w, o->sgd_bias->velocity, o->sgd_bias->count
+                )));
+}
+
+static int write_adam_entry(
+    nir_json_writer_t *w, const nir_checkpoint_opt_t *o
+) {
+    int ok = nir_json_key(w, "kind") && nir_json_string(w, "adam") &&
+        nir_json_key(w, "step") &&
+        nir_json_int(w, (long long)o->adam_weight->step) &&
+        nir_json_key(w, "m") &&
+        write_floats(w, o->adam_weight->m, o->adam_weight->count) &&
+        nir_json_key(w, "v") &&
+        write_floats(w, o->adam_weight->v, o->adam_weight->count);
+    if (ok && o->adam_bias != NULL) {
+        ok = nir_json_key(w, "step_bias") &&
+            nir_json_int(w, (long long)o->adam_bias->step) &&
+            nir_json_key(w, "m_bias") &&
+            write_floats(
+                w, o->adam_bias->m, o->adam_bias->count
+            ) &&
+            nir_json_key(w, "v_bias") &&
+            write_floats(
+                w, o->adam_bias->v, o->adam_bias->count
+            );
+    }
+    return ok;
+}
+
+static int write_optimizers(
+    nir_json_writer_t *w, const nir_checkpoint_opt_t *opts,
+    size_t opt_count
+) {
+    if (!nir_json_key(w, "optimizers") || !nir_json_begin_object(w)) {
+        return 0;
+    }
+    for (size_t i = 0; i < opt_count; i++) {
+        const nir_checkpoint_opt_t *o = &opts[i];
+        int ok = nir_json_key(w, o->node) &&
+            nir_json_begin_object(w);
+        if (ok) {
+            ok = o->kind == NIR_CHECKPOINT_OPT_SGD
+                ? write_sgd_entry(w, o)
+                : write_adam_entry(w, o);
+        }
+        ok = ok && nir_json_end(w);
+        if (!ok) {
+            return 0;
+        }
+    }
+    return nir_json_end(w);
+}
+
+static char *dumps_impl(
     const nir_graph_t *graph, const nir_checkpoint_meta_t *meta,
+    const nir_checkpoint_opt_t *opts, size_t opt_count,
     char **error
 ) {
     if (graph == NULL) {
@@ -501,7 +686,13 @@ char *nir_checkpoint_dumps(
             ok = write_node(w, node);
         }
     }
-    ok = ok && nir_json_end(w) && nir_json_end(w);
+    ok = ok && nir_json_end(w);
+    int opt_failed = 0;
+    if (ok && opts != NULL && opt_count > 0) {
+        ok = write_optimizers(w, opts, opt_count);
+        opt_failed = !ok;
+    }
+    ok = ok && nir_json_end(w);
     char *text = NULL;
     if (ok && nir_json_writer_data(w) != NULL) {
         size_t length = nir_json_writer_length(w) + 1;
@@ -512,9 +703,47 @@ char *nir_checkpoint_dumps(
     }
     nir_json_writer_free(w);
     if (text == NULL) {
-        set_error(error, "checkpoint weights must be finite");
+        set_error(
+            error, opt_failed
+                ? "checkpoint optimizer state must be finite"
+                : "checkpoint weights must be finite"
+        );
     }
     return text;
+}
+
+char *nir_checkpoint_dumps(
+    const nir_graph_t *graph, const nir_checkpoint_meta_t *meta,
+    char **error
+) {
+    return dumps_impl(graph, meta, NULL, 0, error);
+}
+
+char *nir_checkpoint_dumps_with_opt(
+    const nir_graph_t *graph, const nir_checkpoint_meta_t *meta,
+    const nir_checkpoint_opt_t *opts, size_t opt_count,
+    char **error
+) {
+    if (graph != NULL &&
+        !validate_opt_entries(graph, opts, opt_count, error)) {
+        return NULL;
+    }
+    return dumps_impl(graph, meta, opts, opt_count, error);
+}
+
+static int save_text(const char *path, char *text, char **error) {
+    FILE *f = fopen(path, "wb");
+    int ok = 0;
+    if (f != NULL) {
+        size_t length = strlen(text);
+        ok = fwrite(text, 1, length, f) == length;
+        ok = fclose(f) == 0 && ok;
+    }
+    free(text);
+    if (!ok) {
+        set_error(error, "cannot write checkpoint file");
+    }
+    return ok;
 }
 
 int nir_checkpoint_save(
@@ -529,18 +758,26 @@ int nir_checkpoint_save(
     if (text == NULL) {
         return 0;
     }
-    FILE *f = fopen(path, "wb");
-    int ok = 0;
-    if (f != NULL) {
-        size_t length = strlen(text);
-        ok = fwrite(text, 1, length, f) == length;
-        ok = fclose(f) == 0 && ok;
+    return save_text(path, text, error);
+}
+
+int nir_checkpoint_save_with_opt(
+    const char *path, const nir_graph_t *graph,
+    const nir_checkpoint_meta_t *meta,
+    const nir_checkpoint_opt_t *opts, size_t opt_count,
+    char **error
+) {
+    if (path == NULL) {
+        set_error(error, "checkpoint save needs a path");
+        return 0;
     }
-    free(text);
-    if (!ok) {
-        set_error(error, "cannot write checkpoint file");
+    char *text = nir_checkpoint_dumps_with_opt(
+        graph, meta, opts, opt_count, error
+    );
+    if (text == NULL) {
+        return 0;
     }
-    return ok;
+    return save_text(path, text, error);
 }
 
 /* Read a flat numeric array into `out[0..n)`; every element must be
@@ -687,9 +924,259 @@ static char *read_whole_file(const char *path) {
     return text;
 }
 
-int nir_checkpoint_loads(
-    const char *text, nir_graph_t *graph, nir_checkpoint_meta_t *meta,
+/* True when every element of an already length-checked array is a
+ * finite JSON number. */
+static int floats_finite(const json_value_t *array) {
+    size_t n = json_array_length(array);
+    for (size_t i = 0; i < n; i++) {
+        const json_value_t *item = json_array_get(array, i);
+        if (item == NULL || item->type != JSON_NUMBER ||
+            !isfinite(item->as.number)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Validate an Adam step counter: a non-negative integer within the
+ * exactly representable double range (2^53-1 covers any realistic
+ * training run). */
+static int read_opt_step(const json_value_t *v, unsigned long *out) {
+    if (v == NULL || v->type != JSON_NUMBER) {
+        return 0;
+    }
+    double d = v->as.number;
+    if (!isfinite(d) || d < 0.0 || d != floor(d) ||
+        d > 9007199254740991.0) {
+        return 0;
+    }
+    *out = (unsigned long)d;
+    return 1;
+}
+
+static nir_checkpoint_opt_t *find_opt(
+    nir_checkpoint_opt_t *opts, size_t opt_count, const char *node
+) {
+    for (size_t i = 0; i < opt_count; i++) {
+        if (opts[i].node != NULL && strcmp(opts[i].node, node) == 0) {
+            return &opts[i];
+        }
+    }
+    return NULL;
+}
+
+/* Check one required optimizer buffer: present array, exact
+ * length, all finite. Length mismatches report a shape error;
+ * missing/non-array/non-finite report a flat-array error. */
+static int check_opt_buffer(
+    const json_value_t *entry, const char *key, size_t want,
     char **error
+) {
+    const json_value_t *arr = json_object_get(entry, key);
+    if (arr == NULL || arr->type != JSON_ARRAY) {
+        set_error(
+            error, "checkpoint optimizer state is not a flat array"
+        );
+        return 0;
+    }
+    if (json_array_length(arr) != want) {
+        set_error(
+            error, "checkpoint optimizer shape does not match graph"
+        );
+        return 0;
+    }
+    if (!floats_finite(arr)) {
+        set_error(
+            error, "checkpoint optimizer state is not a flat array"
+        );
+        return 0;
+    }
+    return 1;
+}
+
+/* Validate one file optimizer entry and restore it into its
+ * matching caller entry (already located). Validates every field
+ * before writing any, so a failing entry leaves that node's
+ * optimizer untouched. */
+static int load_one_opt(
+    const char *name, const json_value_t *entry,
+    nir_checkpoint_opt_t *dst, size_t wn, size_t bn, int has_bias,
+    char **error
+) {
+    (void)name;
+    if (entry == NULL || entry->type != JSON_OBJECT) {
+        set_error(error, "checkpoint optimizer entry is invalid");
+        return 0;
+    }
+    const char *kind = json_as_string(json_object_get(entry, "kind"));
+    int is_sgd = kind != NULL && strcmp(kind, "sgd") == 0;
+    int is_adam = kind != NULL && strcmp(kind, "adam") == 0;
+    if (!is_sgd && !is_adam) {
+        set_error(error, "checkpoint optimizer has an unknown kind");
+        return 0;
+    }
+    if ((is_sgd && dst->kind != NIR_CHECKPOINT_OPT_SGD) ||
+        (is_adam && dst->kind != NIR_CHECKPOINT_OPT_ADAM)) {
+        set_error(
+            error, "checkpoint optimizer kind does not match entry"
+        );
+        return 0;
+    }
+    if (is_sgd) {
+        if (!check_opt_buffer(entry, "velocity", wn, error)) {
+            return 0;
+        }
+        const json_value_t *vb = json_object_get(entry, "velocity_bias");
+        int want_bias = vb != NULL && vb->type != JSON_NULL;
+        if (want_bias) {
+            if (!has_bias) {
+                set_error(
+                    error,
+                    "checkpoint optimizer shape does not match graph"
+                );
+                return 0;
+            }
+            if (!check_opt_buffer(
+                    entry, "velocity_bias", bn, error
+                )) {
+                return 0;
+            }
+        }
+        if (!read_floats(
+                json_object_get(entry, "velocity"),
+                dst->sgd_weight->velocity, wn
+            )) {
+            set_error(
+                error, "checkpoint optimizer state is not a flat array"
+            );
+            return 0;
+        }
+        if (want_bias && dst->sgd_bias != NULL &&
+            !read_floats(vb, dst->sgd_bias->velocity, bn)) {
+            set_error(
+                error, "checkpoint optimizer state is not a flat array"
+            );
+            return 0;
+        }
+        return 1;
+    }
+    unsigned long step = 0;
+    if (!read_opt_step(json_object_get(entry, "step"), &step)) {
+        set_error(error, "checkpoint optimizer step is invalid");
+        return 0;
+    }
+    if (!check_opt_buffer(entry, "m", wn, error) ||
+        !check_opt_buffer(entry, "v", wn, error)) {
+        return 0;
+    }
+    const json_value_t *mb = json_object_get(entry, "m_bias");
+    const json_value_t *vb = json_object_get(entry, "v_bias");
+    int has_mb = mb != NULL && mb->type != JSON_NULL;
+    int has_vb = vb != NULL && vb->type != JSON_NULL;
+    if (has_mb != has_vb) {
+        set_error(
+            error, "checkpoint optimizer bias state is incomplete"
+        );
+        return 0;
+    }
+    unsigned long step_bias = step;
+    if (has_mb) {
+        if (!has_bias) {
+            set_error(
+                error,
+                "checkpoint optimizer shape does not match graph"
+            );
+            return 0;
+        }
+        const json_value_t *sb = json_object_get(entry, "step_bias");
+        if (sb != NULL && sb->type != JSON_NULL &&
+            !read_opt_step(sb, &step_bias)) {
+            set_error(error, "checkpoint optimizer step is invalid");
+            return 0;
+        }
+        if (!check_opt_buffer(entry, "m_bias", bn, error) ||
+            !check_opt_buffer(entry, "v_bias", bn, error)) {
+            return 0;
+        }
+    }
+    if (!read_floats(
+            json_object_get(entry, "m"), dst->adam_weight->m, wn
+        ) ||
+        !read_floats(
+            json_object_get(entry, "v"), dst->adam_weight->v, wn
+        )) {
+        set_error(
+            error, "checkpoint optimizer state is not a flat array"
+        );
+        return 0;
+    }
+    dst->adam_weight->step = step;
+    if (has_mb && dst->adam_bias != NULL) {
+        if (!read_floats(mb, dst->adam_bias->m, bn) ||
+            !read_floats(vb, dst->adam_bias->v, bn)) {
+            set_error(
+                error, "checkpoint optimizer state is not a flat array"
+            );
+            return 0;
+        }
+        dst->adam_bias->step = step_bias;
+    }
+    return 1;
+}
+
+static int load_optimizers(
+    const json_value_t *root, nir_graph_t *graph,
+    nir_checkpoint_opt_t *opts, size_t opt_count, char **error
+) {
+    const json_value_t *opt_root = json_object_get(root, "optimizers");
+    if (opt_root == NULL || opt_root->type == JSON_NULL) {
+        return 1;
+    }
+    if (opt_root->type != JSON_OBJECT) {
+        set_error(
+            error, "checkpoint optimizers section is not an object"
+        );
+        return 0;
+    }
+    for (size_t i = 0; i < opt_root->as.object.count; i++) {
+        const char *name = opt_root->as.object.keys[i];
+        const json_value_t *entry = opt_root->as.object.values[i];
+        size_t index = nir_graph_find(graph, name);
+        if (index == (size_t)-1) {
+            set_error(
+                error, "checkpoint optimizer names an unknown node"
+            );
+            return 0;
+        }
+        const float *w = NULL;
+        const float *b = NULL;
+        size_t wn = 0;
+        size_t bn = 0;
+        if (!weight_shapes(&graph->nodes[index], &w, &wn, &b, &bn)) {
+            set_error(
+                error, "checkpoint optimizer targets an unweighted node"
+            );
+            return 0;
+        }
+        nir_checkpoint_opt_t *dst = find_opt(opts, opt_count, name);
+        if (dst == NULL) {
+            set_error(
+                error, "checkpoint optimizer has no matching entry"
+            );
+            return 0;
+        }
+        if (!load_one_opt(
+                name, entry, dst, wn, bn, b != NULL, error
+            )) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int loads_impl(
+    const char *text, nir_graph_t *graph, nir_checkpoint_meta_t *meta,
+    nir_checkpoint_opt_t *opts, size_t opt_count, char **error
 ) {
     if (text == NULL || graph == NULL) {
         set_error(error, "checkpoint load needs text and a graph");
@@ -708,7 +1195,7 @@ int nir_checkpoint_loads(
     if (!ok) {
         set_error(error, "checkpoint has an unknown format marker");
     } else if (version == NULL || version->type != JSON_NUMBER ||
-        version->as.number != (double)NIR_CHECKPOINT_VERSION) {
+        (version->as.number != 1.0 && version->as.number != 2.0)) {
         set_error(error, "checkpoint has an unsupported version");
         ok = 0;
     }
@@ -745,6 +1232,9 @@ int nir_checkpoint_loads(
             ok = 0;
         }
     }
+    if (ok && opts != NULL && opt_count > 0) {
+        ok = load_optimizers(root, graph, opts, opt_count, error);
+    }
     if (ok && meta != NULL) {
         memset(meta, 0, sizeof(*meta));
         const char *topology = json_as_string(
@@ -771,6 +1261,29 @@ int nir_checkpoint_loads(
     return ok;
 }
 
+int nir_checkpoint_loads(
+    const char *text, nir_graph_t *graph, nir_checkpoint_meta_t *meta,
+    char **error
+) {
+    return loads_impl(text, graph, meta, NULL, 0, error);
+}
+
+int nir_checkpoint_loads_with_opt(
+    const char *text, nir_graph_t *graph, nir_checkpoint_meta_t *meta,
+    nir_checkpoint_opt_t *opts, size_t opt_count,
+    char **error
+) {
+    if (graph != NULL && opt_count > 0 &&
+        !validate_opt_entries(graph, opts, opt_count, error)) {
+        return 0;
+    }
+    /* NULL/0 restores weights only, ignoring any file optimizers. */
+    if (opts == NULL || opt_count == 0) {
+        return loads_impl(text, graph, meta, NULL, 0, error);
+    }
+    return loads_impl(text, graph, meta, opts, opt_count, error);
+}
+
 int nir_checkpoint_load(
     const char *path, nir_graph_t *graph, nir_checkpoint_meta_t *meta,
     char **error
@@ -785,6 +1298,27 @@ int nir_checkpoint_load(
         return 0;
     }
     int ok = nir_checkpoint_loads(text, graph, meta, error);
+    free(text);
+    return ok;
+}
+
+int nir_checkpoint_load_with_opt(
+    const char *path, nir_graph_t *graph, nir_checkpoint_meta_t *meta,
+    nir_checkpoint_opt_t *opts, size_t opt_count,
+    char **error
+) {
+    if (path == NULL) {
+        set_error(error, "checkpoint load needs a path");
+        return 0;
+    }
+    char *text = read_whole_file(path);
+    if (text == NULL) {
+        set_error(error, "cannot read checkpoint file");
+        return 0;
+    }
+    int ok = nir_checkpoint_loads_with_opt(
+        text, graph, meta, opts, opt_count, error
+    );
     free(text);
     return ok;
 }
