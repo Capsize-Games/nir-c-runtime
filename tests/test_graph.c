@@ -145,6 +145,49 @@ static void test_new_kinds_load_with_defaults(void) {
     json_free(json);
 }
 
+static void test_conv2d_groups(void) {
+    const char *prefix =
+        "{\"nodes\":[{\"name\":\"c\",\"kind\":\"Conv2d\",\"params\":{"
+        "\"weight\":[[[[1]]]],\"stride\":[1,1],\"padding\":[0,0],"
+        "\"dilation\":[1,1]";
+    const char *suffix = "}}],\"edges\":[]}";
+    const char *rejected[][2] = {
+        {",\"groups\":2", "Conv2d groups must be 1"},
+        {",\"groups\":0", "Conv2d groups must be 1"},
+        {",\"groups\":1.5", "Conv2d groups must be a nonnegative integer"},
+        {",\"groups\":\"two\"", "Conv2d groups must be a nonnegative integer"},
+    };
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        char text[512];
+        snprintf(text, sizeof(text), "%s%s%s",
+            prefix, rejected[i][0], suffix);
+        char *error = NULL;
+        json_value_t *json = json_parse(text, &error);
+        CHECK(json != NULL && error == NULL);
+        nir_graph_t graph;
+        CHECK(!nir_graph_load(json, &graph, &error));
+        CHECK(error != NULL && strstr(error, rejected[i][1]) != NULL);
+        CHECK(graph.nodes == NULL && graph.node_count == 0);
+        nir_graph_free(&graph);
+        json_free(json);
+        free(error);
+    }
+    const char *accepted[] = {"", ",\"groups\":1"};
+    for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+        char text[512];
+        snprintf(text, sizeof(text), "%s%s%s",
+            prefix, accepted[i], suffix);
+        char *error = NULL;
+        json_value_t *json = json_parse(text, &error);
+        CHECK(json != NULL && error == NULL);
+        nir_graph_t graph;
+        CHECK(nir_graph_load(json, &graph, &error));
+        CHECK(error == NULL && graph.node_count == 1);
+        nir_graph_free(&graph);
+        json_free(json);
+    }
+}
+
 int main(void) {
     test_invalid_endpoints_are_rejected();
     test_unknown_string_endpoint_is_rejected();
@@ -152,5 +195,6 @@ int main(void) {
     test_malformed_graph_parameters_are_rejected();
     test_unsupported_kind_names_kind();
     test_new_kinds_load_with_defaults();
+    test_conv2d_groups();
     return 0;
 }
