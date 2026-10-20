@@ -1,10 +1,10 @@
 /* A loaded NIR graph: nodes with typed parameters, plus edges.
  *
- * Scoped to exactly the node kinds spikeforge's conv_net topology
- * emits (see the reference interpreter this mirrors:
- * spikeforge/nir_bridge/{ops_neuron,ops_linear}.py) -- Input, Output,
+ * Supports the node kinds spikeforge's conv_net topology emits (see the
+ * reference interpreter this mirrors:
+ * spikeforge/nir_bridge/{ops_neuron,ops_linear}.py), plus ReLU -- Input, Output,
  * Conv2d, Affine, Flatten, AvgPool2d, SumPool2d, LI, Threshold,
- * Scale, Delay. LIF/IF/CubaLIF/Conv1d/Linear are not implemented;
+ * Scale, Delay, ReLU. LIF/IF/CubaLIF/Conv1d/Linear are not implemented;
  * loading a graph that uses them fails with a named error rather than
  * silently misinterpreting them.
  */
@@ -26,7 +26,8 @@ typedef enum {
     NIR_NODE_LI,
     NIR_NODE_THRESHOLD,
     NIR_NODE_SCALE,
-    NIR_NODE_DELAY
+    NIR_NODE_DELAY,
+    NIR_NODE_RELU
 } nir_node_kind_t;
 
 typedef struct {

@@ -323,6 +323,7 @@ static const kind_entry_t KIND_TABLE[] = {
     {"Threshold", NIR_NODE_THRESHOLD},
     {"Scale", NIR_NODE_SCALE},
     {"Delay", NIR_NODE_DELAY},
+    {"ReLU", NIR_NODE_RELU},
 };
 
 static int resolve_kind(const char *text, nir_node_kind_t *kind) {
@@ -391,6 +392,7 @@ static int load_node(
         case NIR_NODE_OUTPUT:
         case NIR_NODE_FLATTEN:
         case NIR_NODE_DELAY:
+        case NIR_NODE_RELU:
             return 1;
         default:
             set_error(error, "unhandled node kind", NULL);
