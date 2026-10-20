@@ -509,6 +509,7 @@ static const kind_entry_t KIND_TABLE[] = {
     {"CubaLIF", NIR_NODE_CUBALIF},
     {"Conv1d", NIR_NODE_CONV1D},
     {"Linear", NIR_NODE_LINEAR},
+    {"ReLU", NIR_NODE_RELU},
 };
 
 static int resolve_kind(const char *text, nir_node_kind_t *kind) {
@@ -597,6 +598,7 @@ static int load_node(
         case NIR_NODE_OUTPUT:
         case NIR_NODE_FLATTEN:
         case NIR_NODE_DELAY:
+        case NIR_NODE_RELU:
             return 1;
         default:
             set_error(error, "unhandled node kind");

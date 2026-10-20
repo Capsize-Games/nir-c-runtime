@@ -29,10 +29,9 @@ NIR-exported spikeforge model, not tied to one use case.
 ## Status
 
 Working MVP. Loads a `graph_summary()`-shaped NIR JSON export and runs
-inference for the node kinds spikeforge's topologies emit: `Input`,
-`Conv2d`, `Conv1d`, `Affine`, `Linear`, `Flatten`, `AvgPool2d`,
-`SumPool2d`, `LI`, `LIF`, `IF`, `CubaLIF`, `Threshold`, `Scale`,
-`Delay`, `Output`. Any other kind fails graph load with a named
+inference for `Input`, `Conv2d`, `Conv1d`, `Affine`, `Linear`, `Flatten`,
+`AvgPool2d`, `SumPool2d`, `LI`, `LIF`, `IF`, `CubaLIF`, `Threshold`, `Scale`,
+`Delay`, `ReLU`, and `Output`. Any other kind fails graph load with a named
 "unsupported node kind" error rather than being silently misinterpreted.
 
 **Validated, not just "it runs":** `tests/test_conv_net.c` and
@@ -87,11 +86,11 @@ target-specific kernels remain future optimization work.
 - [x] Backward ops for spatial/linear nodes (Conv2d, Conv1d, Flatten,
       AvgPool2d, SumPool2d, Scale) and spiking neurons (LIF/IF/CubaLIF
       with surrogate through the spike output, zero through the
-      hard-reset branch).
+      hard-reset branch), plus ReLU with zero derivative at and below zero.
 - [x] Graph-level BPTT tape (`tape.h`): retains per-step activations
       and neuron state, backpropagates through Delay/LI recurrence,
-      matches `nir_runtime_run` bit for bit, finite-difference
-      verified on smooth topologies.
+      matches `nir_runtime_run` bit for bit, and finite-difference
+      verifies smooth topologies including dense layers separated by ReLU.
 - [x] Mini-batch training (`minibatch.h`): mean loss/gradient
       reduction over a batch-1 loop (no batch axis on the tensor
       ABI) plus seeded Fisher-Yates epoch shuffling.

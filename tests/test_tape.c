@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "nir_c_runtime/checkpoint.h"
 #include "nir_c_runtime/graph.h"
 #include "nir_c_runtime/json.h"
 #include "nir_c_runtime/loss.h"
@@ -475,6 +476,103 @@ static void test_delay_flow(void) {
     nir_tensor_free(&dloss);
     nir_tape_free(&tape);
     nir_graph_free(&graph);
+}
+
+static void test_dense_relu_training_and_finite_difference(void) {
+    nir_graph_t graph = load_graph(
+        "fixtures/tape_relu_dense_graph.json"
+    );
+    const size_t steps = 2;
+    float x0[] = {1.0f, 2.0f};
+    float x1[] = {-1.0f, 0.5f};
+    nir_tensor_t frames[2] = {
+        make_vector(x0, 2), make_vector(x1, 2)
+    };
+    float target_value[] = {0.4f};
+    nir_tensor_t target = make_vector(target_value, 1);
+
+    nir_tape_t tape = {0};
+    char *error = NULL;
+    CHECK(nir_tape_init(
+        &tape, &graph, steps, NIR_SURROGATE_FAST_SIGMOID, 25.0f,
+        &error
+    ));
+    nir_tensor_t readout = {0};
+    CHECK(nir_tape_forward(&tape, frames, &readout, &error));
+    size_t output_shape[1] = {readout.size};
+    nir_tensor_t grad = nir_tensor_alloc(output_shape, 1);
+    CHECK(grad.data != NULL);
+    float loss = 0.0f;
+    CHECK(nir_mse_loss(&readout, &target, &loss, &grad));
+    CHECK(nir_tape_backward(&tape, &grad, &error));
+    check_fd(&graph, &tape, frames, steps, &target, 1e-3, 1e-3);
+
+    size_t fc1 = nir_graph_find(&graph, "fc1");
+    char *checkpoint = nir_checkpoint_dumps(&graph, NULL, &error);
+    CHECK(checkpoint != NULL && error == NULL);
+    char *summary = nir_graph_export_summary(&graph, &error);
+    CHECK(summary != NULL && error == NULL);
+    json_value_t *summary_json = json_parse(summary, &error);
+    CHECK(summary_json != NULL && error == NULL);
+    nir_graph_t resumed_graph = {0};
+    CHECK(nir_graph_load(summary_json, &resumed_graph, &error));
+    CHECK(nir_graph_find(&resumed_graph, "relu") != (size_t)-1);
+    CHECK(resumed_graph.nodes[nir_graph_find(
+        &resumed_graph, "relu")].kind == NIR_NODE_RELU);
+    size_t resumed_fc1 = nir_graph_find(&resumed_graph, "fc1");
+    resumed_graph.nodes[resumed_fc1].params.affine.weight[0] = -9.0f;
+    CHECK(nir_checkpoint_loads(
+        checkpoint, &resumed_graph, NULL, &error
+    ));
+    CHECK(resumed_graph.nodes[resumed_fc1].params.affine.weight[0] ==
+          graph.nodes[fc1].params.affine.weight[0]);
+    nir_tape_t resumed_tape = {0};
+    CHECK(nir_tape_init(
+        &resumed_tape, &resumed_graph, steps,
+        NIR_SURROGATE_FAST_SIGMOID, 25.0f, &error
+    ));
+    nir_tensor_t resumed_readout = {0};
+    CHECK(nir_tape_forward(
+        &resumed_tape, frames, &resumed_readout, &error
+    ));
+    size_t resumed_grad_shape[1] = {resumed_readout.size};
+    nir_tensor_t resumed_grad = nir_tensor_alloc(resumed_grad_shape, 1);
+    CHECK(resumed_grad.data != NULL);
+    CHECK(nir_mse_loss(
+        &resumed_readout, &target, &loss, &resumed_grad
+    ));
+    CHECK(nir_tape_backward(&resumed_tape, &resumed_grad, &error));
+    nir_tensor_free(&resumed_grad);
+    nir_tensor_free(&resumed_readout);
+    nir_tape_free(&resumed_tape);
+    nir_graph_free(&resumed_graph);
+    json_free(summary_json);
+    free(summary);
+    free(checkpoint);
+
+    const nir_tensor_t *weight_grad = nir_tape_weight_grad(&tape, fc1);
+    CHECK(weight_grad != NULL && weight_grad->size == 4);
+    CHECK(weight_grad->data[0] != 0.0f || weight_grad->data[1] != 0.0f ||
+          weight_grad->data[2] != 0.0f || weight_grad->data[3] != 0.0f);
+    nir_sgd_t optimizer;
+    CHECK(nir_sgd_init(&optimizer, 4, 0.01f, 0.0f, 0.0f, &error));
+    float old_weight = graph.nodes[fc1].params.affine.weight[0];
+    CHECK(nir_sgd_step(
+        &optimizer, graph.nodes[fc1].params.affine.weight,
+        weight_grad->data, weight_grad->size
+    ));
+    CHECK(graph.nodes[fc1].params.affine.weight[0] != old_weight);
+    nir_sgd_free(&optimizer);
+
+    nir_tensor_free(&grad);
+    nir_tensor_free(&readout);
+    nir_tape_free(&tape);
+    nir_tensor_free(&target);
+    for (size_t t = 0; t < steps; t++) {
+        nir_tensor_free(&frames[t]);
+    }
+    nir_graph_free(&graph);
+    free(error);
 }
 
 /* One-step Affine/Threshold/LIF/Scale/Affine chain against a
@@ -995,6 +1093,7 @@ int main(void) {
     test_forward_conv_net();
     test_fd_delay_li();
     test_delay_flow();
+    test_dense_relu_training_and_finite_difference();
     test_step_lif();
     test_step_if();
     test_fd_conv();

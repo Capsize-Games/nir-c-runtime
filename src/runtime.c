@@ -129,7 +129,7 @@ int nir_runtime_init(
     }
     for (size_t i = 0; i < graph->node_count; i++) {
         if (graph->nodes[i].kind < NIR_NODE_INPUT ||
-            graph->nodes[i].kind > NIR_NODE_LINEAR) {
+            graph->nodes[i].kind > NIR_NODE_RELU) {
             set_error(error, "runtime graph contains an invalid node kind");
             return 0;
         }
@@ -347,6 +347,8 @@ static nir_tensor_t apply_node(
             return nir_op_threshold(&node->params.threshold, input);
         case NIR_NODE_SCALE:
             return nir_op_scale(&node->params.scale, input);
+        case NIR_NODE_RELU:
+            return nir_op_relu(input);
         case NIR_NODE_OUTPUT:
         default:
             return nir_tensor_clone(input); /* Output is a pass-through */
@@ -581,6 +583,9 @@ static int apply_node_workspace(
             break;
         case NIR_NODE_SCALE:
             ok = nir_op_scale_into(&node->params.scale, input, output);
+            break;
+        case NIR_NODE_RELU:
+            ok = nir_op_relu_into(input, output);
             break;
         case NIR_NODE_OUTPUT:
             ok = nir_tensor_copy_into(output, input);

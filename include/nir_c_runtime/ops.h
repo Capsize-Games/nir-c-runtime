@@ -166,6 +166,10 @@ int nir_op_scale_into(
     nir_tensor_t *output
 );
 
+/* Elementwise rectified linear unit: y = max(0, input). */
+nir_tensor_t nir_op_relu(const nir_tensor_t *input);
+int nir_op_relu_into(const nir_tensor_t *input, nir_tensor_t *output);
+
 /* Training: single-step backward ops. The forward spike
  * nonlinearities stay strict Heavisides; the backward pass below
  * substitutes a smooth surrogate derivative, mirroring snnTorch's
@@ -196,6 +200,14 @@ int nir_op_threshold_backward(
     const nir_threshold_params_t *params, const nir_tensor_t *membrane,
     const nir_tensor_t *grad_output, nir_surrogate_kind_t surrogate,
     float slope, nir_tensor_t *grad_input
+);
+
+/* Backward through ReLU: grad_input[i] is grad_output[i] when
+ * input[i] > 0, and zero otherwise (including input exactly zero).
+ * Shapes must match; grad_input may exactly alias grad_output. */
+int nir_op_relu_backward(
+    const nir_tensor_t *input, const nir_tensor_t *grad_output,
+    nir_tensor_t *grad_input
 );
 
 /* Backward through one LI step: with decay = exp(-1 / tau),

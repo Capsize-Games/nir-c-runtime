@@ -380,6 +380,7 @@ static const char *kind_name(nir_node_kind_t kind) {
         case NIR_NODE_CUBALIF: return "CubaLIF";
         case NIR_NODE_CONV1D: return "Conv1d";
         case NIR_NODE_LINEAR: return "Linear";
+        case NIR_NODE_RELU: return "ReLU";
         default: return NULL;
     }
 }
@@ -1519,6 +1520,8 @@ static int export_params(nir_json_writer_t *w, const nir_node_t *node) {
             break;
         case NIR_NODE_SCALE:
             ok = write_scalar(w, "scale", node->params.scale.scale);
+            break;
+        case NIR_NODE_RELU:
             break;
         default:
             break; /* Input/Output/Flatten/Delay carry no params */

@@ -501,6 +501,9 @@ static int apply_node(
         case NIR_NODE_SCALE:
             *value = nir_op_scale(&node->params.scale, input);
             break;
+        case NIR_NODE_RELU:
+            *value = nir_op_relu(input);
+            break;
         case NIR_NODE_OUTPUT:
             *value = nir_tensor_clone(input); /* pass-through */
             break;
@@ -729,6 +732,8 @@ static const char *backward_error_for(nir_node_kind_t kind) {
             return "threshold node backward pass failed";
         case NIR_NODE_SCALE:
             return "scale node backward pass failed";
+        case NIR_NODE_RELU:
+            return "ReLU node backward pass failed";
         case NIR_NODE_LI:
             return "LI node backward pass failed";
         case NIR_NODE_LIF:
@@ -935,6 +940,9 @@ static int backward_stateless(
                 &tape->grad_scale[index]
             );
             break;
+        case NIR_NODE_RELU:
+            ok = nir_op_relu_backward(input, gv, scratch);
+            break;
         default:
             break;
     }
@@ -985,6 +993,7 @@ static int backward_node(
         case NIR_NODE_SUMPOOL2D:
         case NIR_NODE_THRESHOLD:
         case NIR_NODE_SCALE:
+        case NIR_NODE_RELU:
             return backward_stateless(
                 tape, step, index, scratch, error
             );

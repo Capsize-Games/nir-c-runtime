@@ -723,6 +723,29 @@ nir_tensor_t nir_op_scale(
     return output;
 }
 
+int nir_op_relu_into(const nir_tensor_t *input, nir_tensor_t *output) {
+    if (!tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        !prepare_output(output, input->shape, input->ndim) ||
+        tensors_partially_overlap(input, output)) {
+        return 0;
+    }
+    for (size_t i = 0; i < input->size; i++) {
+        output->data[i] = input->data[i] < 0.0f ? 0.0f : input->data[i];
+    }
+    return 1;
+}
+
+nir_tensor_t nir_op_relu(const nir_tensor_t *input) {
+    if (!tensor_valid(input, input != NULL ? input->ndim : 0)) {
+        return (nir_tensor_t){0};
+    }
+    nir_tensor_t output = nir_tensor_alloc(input->shape, input->ndim);
+    if (output.data != NULL && !nir_op_relu_into(input, &output)) {
+        nir_tensor_free(&output);
+    }
+    return output;
+}
+
 static double surrogate_grad_unchecked(
     nir_surrogate_kind_t kind, double slope, double x
 ) {
@@ -778,6 +801,25 @@ int nir_op_threshold_backward(
             surrogate, s, (double)membrane->data[i] - threshold
         );
         grad_input->data[i] = grad_output->data[i] * (float)g;
+    }
+    return 1;
+}
+
+int nir_op_relu_backward(
+    const nir_tensor_t *input, const nir_tensor_t *grad_output,
+    nir_tensor_t *grad_input
+) {
+    if (grad_input == NULL || !tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        !tensor_valid(grad_output, input != NULL ? input->ndim : 0) ||
+        !tensor_same_shape(input, grad_output) ||
+        tensors_partially_overlap(input, grad_input) ||
+        tensors_partially_overlap(grad_output, grad_input) ||
+        !prepare_output(grad_input, input->shape, input->ndim)) {
+        return 0;
+    }
+    for (size_t i = 0; i < input->size; i++) {
+        grad_input->data[i] = input->data[i] > 0.0f ?
+            grad_output->data[i] : 0.0f;
     }
     return 1;
 }

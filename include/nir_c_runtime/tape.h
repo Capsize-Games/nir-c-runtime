@@ -37,6 +37,8 @@
  *   them. CubaLIF's synaptic-current recurrence has no gradient
  *   input slot on nir_op_cuba_backward, so cross-step synaptic
  *   credit is truncated as well.
+ * - ReLU backpropagates grad_output where its retained summed input
+ *   is strictly positive and zero at and below zero.
  *
  * The tape owns all retained tensors and gradient buffers; the
  * graph (and its parameter arrays) is borrowed and must outlive
