@@ -484,7 +484,9 @@ static void test_scale_backward(void) {
 static void check_lif_case(
     float x, const float *vprev, float gy_spike, int want_spike
 ) {
-    nir_lif_params_t params = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    nir_lif_params_t params = {
+        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
     size_t shape[1] = {1};
     nir_tensor_t input = nir_tensor_alloc(shape, 1);
     nir_tensor_t v_prev = nir_tensor_alloc(shape, 1);
@@ -546,7 +548,9 @@ static void test_lif_backward(void) {
     check_lif_case(0.5f, &rest, 2.0f, 0);
     check_lif_case(2.0f, NULL, -1.5f, 1);
     /* Atan surrogate on the no-spike branch. */
-    nir_lif_params_t params = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    nir_lif_params_t params = {
+        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
     size_t shape[1] = {1};
     nir_tensor_t input = nir_tensor_alloc(shape, 1);
     nir_tensor_t grad_spike = nir_tensor_alloc(shape, 1);
@@ -563,6 +567,26 @@ static void test_lif_backward(void) {
     double g = atan_grad(2.0, membrane - 1.0);
     CHECK_NEAR(grad_x.data[0], g * (1.0 - decay), 1e-6);
     CHECK_NEAR(grad_p.data[0], g * decay, 1e-6);
+    params.reset_mode = NIR_LIF_RESET_SUBTRACTIVE;
+    size_t shape_stored[1] = {1};
+    nir_tensor_t grad_stored = nir_tensor_alloc(shape_stored, 1);
+    grad_stored.data[0] = 3.0f;
+    double subtractive_g = g + 3.0 * (1.0 - atan_grad(
+        2.0, membrane - 1.0
+    ));
+    CHECK(nir_op_lif_backward(
+        &params, &input, NULL, &grad_spike, &grad_stored,
+        NIR_SURROGATE_ATAN, 2.0f, &grad_x, &grad_p
+    ));
+    CHECK_NEAR(grad_x.data[0], subtractive_g * (1.0 - decay), 1e-6);
+    CHECK_NEAR(grad_p.data[0], subtractive_g * decay, 1e-6);
+    params.reset_mode = (nir_lif_reset_mode_t)9;
+    CHECK(!nir_op_lif_backward(
+        &params, &input, NULL, &grad_spike, &grad_stored,
+        NIR_SURROGATE_ATAN, 2.0f, &grad_x, &grad_p
+    ));
+    params.reset_mode = NIR_LIF_RESET_HARD;
+    nir_tensor_free(&grad_stored);
     /* Rejections: bad surrogate, bad params, bad wiring. */
     CHECK(!nir_op_lif_backward(
         &params, &input, NULL, &grad_spike, NULL,
@@ -572,13 +596,16 @@ static void test_lif_backward(void) {
         &params, &input, NULL, &grad_spike, NULL,
         (nir_surrogate_kind_t)99, 2.0f, &grad_x, &grad_p
     ));
-    nir_lif_params_t bad_tau = {0.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    nir_lif_params_t bad_tau = {
+        0.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
     CHECK(!nir_op_lif_backward(
         &bad_tau, &input, NULL, &grad_spike, NULL,
         NIR_SURROGATE_ATAN, 2.0f, &grad_x, &grad_p
     ));
     nir_lif_params_t bad_r = {
-        1.0f, (float)NAN, 0.0f, 1.0f, 0.0f
+        1.0f, (float)NAN, 0.0f, 1.0f, 0.0f,
+        NIR_LIF_RESET_HARD
     };
     CHECK(!nir_op_lif_backward(
         &bad_r, &input, NULL, &grad_spike, NULL,

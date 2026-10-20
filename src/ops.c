@@ -567,6 +567,8 @@ int nir_op_lif_into(
 ) {
     if (params == NULL || !tensor_valid(input, input != NULL ? input->ndim : 0) ||
         params->tau <= 0.0f || !isfinite(params->tau) ||
+        (params->reset_mode != NIR_LIF_RESET_HARD &&
+         params->reset_mode != NIR_LIF_RESET_SUBTRACTIVE) ||
         !prev_matches(v_prev, input)) {
         return 0;
     }
@@ -580,10 +582,16 @@ int nir_op_lif_into(
             prev, input->data[i], params->tau, params->r,
             params->v_leak
         );
-        fire_reset(
-            membrane, params->v_threshold, params->v_reset,
-            &spike_out->data[i], &stored_out->data[i]
-        );
+        if (params->reset_mode == NIR_LIF_RESET_HARD) {
+            fire_reset(
+                membrane, params->v_threshold, params->v_reset,
+                &spike_out->data[i], &stored_out->data[i]
+            );
+        } else {
+            float spike = membrane > params->v_threshold ? 1.0f : 0.0f;
+            spike_out->data[i] = spike;
+            stored_out->data[i] = membrane - params->v_threshold * spike;
+        }
     }
     return 1;
 }
@@ -1333,6 +1341,8 @@ int nir_op_lif_backward(
     if (params == NULL || !isfinite(params->tau) ||
         params->tau <= 0.0f || !isfinite(params->r) ||
         !isfinite(params->v_threshold) ||
+        (params->reset_mode != NIR_LIF_RESET_HARD &&
+         params->reset_mode != NIR_LIF_RESET_SUBTRACTIVE) ||
         !spiking_backward_valid(
             input, grad_spike, grad_stored, surrogate, slope) ||
         !prev_matches(v_prev, input)) {
@@ -1358,10 +1368,15 @@ int nir_op_lif_backward(
             + (prev - (double)params->v_leak) * decay
             + (double)params->r * (1.0 - decay) *
             (double)input->data[i];
-        double g = (double)grad_spike->data[i] *
-            surrogate_grad_unchecked(
-                surrogate, s, membrane - threshold
-            );
+        double surrogate_derivative = surrogate_grad_unchecked(
+            surrogate, s, membrane - threshold
+        );
+        double g = (double)grad_spike->data[i] * surrogate_derivative;
+        if (params->reset_mode == NIR_LIF_RESET_SUBTRACTIVE) {
+            double stored_grad = grad_stored != NULL ?
+                (double)grad_stored->data[i] : 0.0;
+            g += stored_grad * (1.0 - threshold * surrogate_derivative);
+        }
         grad_input->data[i] = (float)(g * to_input);
         if (grad_prev != NULL) {
             grad_prev->data[i] = (float)(g * decay);

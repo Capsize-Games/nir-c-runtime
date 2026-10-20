@@ -732,6 +732,71 @@ static void test_step_if(void) {
     nir_graph_free(&graph);
 }
 
+static void test_subtractive_lif_reset_bptt(void) {
+    const char *text =
+        "{\"nodes\":["
+        "{\"name\":\"input\",\"kind\":\"Input\"},"
+        "{\"name\":\"lif\",\"kind\":\"LIF\",\"params\":{"
+        "\"tau\":1,\"r\":1,\"v_leak\":0,\"v_threshold\":0.8,"
+        "\"v_reset\":0,\"reset_mode\":\"subtractive\"}},"
+        "{\"name\":\"output\",\"kind\":\"Output\"}],"
+        "\"edges\":[{\"source\":\"input\",\"target\":\"lif\"},"
+        "{\"source\":\"lif\",\"target\":\"output\"}]}";
+    char *error = NULL;
+    json_value_t *json = json_parse(text, &error);
+    CHECK(json != NULL && error == NULL);
+    nir_graph_t graph;
+    CHECK(nir_graph_load(json, &graph, &error));
+
+    float x0[] = {2.0f}, x1[] = {1.0f};
+    nir_tensor_t frames[2] = {
+        make_vector(x0, 1), make_vector(x1, 1)
+    };
+    nir_tape_t tape;
+    memset(&tape, 0, sizeof(tape));
+    CHECK(nir_tape_init(
+        &tape, &graph, 2, NIR_SURROGATE_FAST_SIGMOID, 2.0f, &error
+    ));
+    nir_tensor_t readout = {0};
+    CHECK(nir_tape_forward(&tape, frames, &readout, &error));
+    CHECK_NEAR(readout.data[0], 1.0f, 1e-6);
+    size_t lif_index = nir_graph_find(&graph, "lif");
+    size_t n = graph.node_count;
+    double decay = exp(-1.0);
+    double c = 1.0 - decay;
+    double membrane0 = 2.0 * c;
+    double stored0 = membrane0 - 0.8;
+    double membrane1 = decay * stored0 + c;
+    double stored1 = membrane1 - 0.8;
+    CHECK_NEAR(tape.values[lif_index].data[0], 1.0f, 1e-6);
+    CHECK_NEAR(tape.stored[lif_index].data[0], stored0, 1e-6);
+    CHECK_NEAR(tape.values[n + lif_index].data[0], 1.0f, 1e-6);
+    CHECK_NEAR(tape.stored[n + lif_index].data[0], stored1, 1e-6);
+
+    size_t target_shape[1] = {1};
+    nir_tensor_t grad_readout = nir_tensor_alloc(target_shape, 1);
+    grad_readout.data[0] = 2.0f; /* d((readout - 0)^2)/d(readout) */
+    CHECK(nir_tape_backward(&tape, &grad_readout, &error));
+    double s0 = fast_sigmoid(2.0, membrane0 - 0.8);
+    double s1 = fast_sigmoid(2.0, membrane1 - 0.8);
+    /* Output averaging seeds each step with 1.0. Step 1's stored
+     * gradient crosses the immediate subtractive reset at step 0. */
+    double reset_gradient = s1 * decay;
+    double membrane_gradient0 = s0 + reset_gradient * (1.0 - 0.8 * s0);
+    double want_x0 = membrane_gradient0 * c;
+    double want_x1 = s1 * c;
+    CHECK_NEAR(nir_tape_input_grad(&tape, 0)->data[0], want_x0, 1e-6);
+    CHECK_NEAR(nir_tape_input_grad(&tape, 1)->data[0], want_x1, 1e-6);
+
+    nir_tensor_free(&grad_readout);
+    nir_tensor_free(&readout);
+    nir_tape_free(&tape);
+    nir_tensor_free(&frames[0]);
+    nir_tensor_free(&frames[1]);
+    nir_graph_free(&graph);
+    json_free(json);
+}
+
 static void fill_lcg(nir_tensor_t *t, unsigned *state) {
     for (size_t i = 0; i < t->size; i++) {
         t->data[i] =
@@ -1095,6 +1160,7 @@ int main(void) {
     test_delay_flow();
     test_dense_relu_training_and_finite_difference();
     test_step_lif();
+    test_subtractive_lif_reset_bptt();
     test_step_if();
     test_fd_conv();
     test_fd_conv1d();

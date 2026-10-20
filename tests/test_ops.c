@@ -174,7 +174,9 @@ static void test_conv1d_matches_hand_computation(void) {
 }
 
 static void test_lif_integrates_then_resets(void) {
-    nir_lif_params_t params = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    nir_lif_params_t params = {
+        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
     size_t shape[1] = {1};
     nir_tensor_t input = nir_tensor_alloc(shape, 1);
     nir_tensor_t spike = nir_tensor_alloc(shape, 1);
@@ -195,6 +197,20 @@ static void test_lif_integrates_then_resets(void) {
     CHECK(membrane > 1.0);
     CHECK_NEAR(spike.data[0], 1.0, 1e-9);
     CHECK_NEAR(stored.data[0], 0.0, 1e-9);
+
+    params.reset_mode = NIR_LIF_RESET_SUBTRACTIVE;
+    input.data[0] = 2.0f;
+    CHECK(nir_op_lif_into(&params, &input, NULL, &spike, &stored));
+    membrane = (1.0 - decay) * 2.0;
+    CHECK_NEAR(spike.data[0], 1.0, 1e-9);
+    CHECK_NEAR(stored.data[0], membrane - params.v_threshold, 1e-6);
+    input.data[0] = 1.0f;
+    CHECK(nir_op_lif_into(&params, &input, &stored, &spike, &stored));
+    membrane = decay * (membrane - params.v_threshold) + (1.0 - decay);
+    CHECK_NEAR(spike.data[0], membrane > params.v_threshold ? 1.0 : 0.0,
+               1e-9);
+    CHECK_NEAR(stored.data[0], membrane > params.v_threshold ?
+               membrane - params.v_threshold : membrane, 1e-6);
 
     nir_tensor_free(&input);
     nir_tensor_free(&spike);
@@ -267,7 +283,9 @@ static void test_spiking_ops_reject_bad_geometry(void) {
     nir_tensor_t input = nir_tensor_alloc(shape, 1);
     nir_tensor_t spike = nir_tensor_alloc(shape, 1);
     nir_tensor_t stored = nir_tensor_alloc(shape, 1);
-    nir_lif_params_t lif = {1.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    nir_lif_params_t lif = {
+        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
 
     /* The two outputs must not alias each other, even exactly. */
     CHECK(!nir_op_lif_into(&lif, &input, NULL, &spike, &spike));
@@ -276,8 +294,15 @@ static void test_spiking_ops_reject_bad_geometry(void) {
     CHECK(!nir_op_lif_into(&lif, &input, NULL, &spike, &aliased));
 
     /* A nonpositive tau is rejected. */
-    nir_lif_params_t bad_tau = {0.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    nir_lif_params_t bad_tau = {
+        0.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
     CHECK(!nir_op_lif_into(&bad_tau, &input, NULL, &spike, &stored));
+
+    /* Reset modes outside the public enum are rejected. */
+    lif.reset_mode = (nir_lif_reset_mode_t)99;
+    CHECK(!nir_op_lif_into(&lif, &input, NULL, &spike, &stored));
+    lif.reset_mode = NIR_LIF_RESET_HARD;
 
     /* Mismatched previous state is rejected. */
     size_t one[1] = {1};

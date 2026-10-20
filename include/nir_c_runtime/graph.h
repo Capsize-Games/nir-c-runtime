@@ -66,8 +66,15 @@ typedef struct {
     float *weight; /* dequantized [out_features][in_features] */
 } nir_linear_params_t;
 
+typedef enum {
+    NIR_LIF_RESET_HARD = 0,
+    NIR_LIF_RESET_SUBTRACTIVE = 1
+} nir_lif_reset_mode_t;
+
 typedef struct {
     float tau, r, v_leak, v_threshold, v_reset;
+    /* Appended to preserve zero-initialized/legacy hard-reset defaults. */
+    nir_lif_reset_mode_t reset_mode;
 } nir_lif_params_t;
 
 typedef struct {

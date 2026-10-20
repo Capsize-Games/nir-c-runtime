@@ -28,13 +28,12 @@
  * - LI nodes unroll exactly: each step's membrane gradient is
  *   the consumer gradient plus the next step's previous-state
  *   gradient.
- * - LIF/IF/CubaLIF follow the spiking-neuron convention in
- *   ops.h: the forward hard reset carries zero gradient, so no
- *   credit flows through the stored membrane across steps, and
- *   the spike path carries the surrogate gradient within each
- *   step. The tape wires the previous-state gradients into
- *   grad_stored faithfully (where shapes agree); the ops ignore
- *   them. CubaLIF's synaptic-current recurrence has no gradient
+ * - Hard-reset LIF, IF, and CubaLIF use the spiking-neuron
+ *   convention in ops.h: the reset branch carries zero gradient.
+ *   Subtractive-reset LIF also propagates through the immediate
+ *   subtractive reset using the configured surrogate. The tape
+ *   wires previous-state gradients into grad_stored where shapes
+ *   agree. CubaLIF's synaptic-current recurrence has no gradient
  *   input slot on nir_op_cuba_backward, so cross-step synaptic
  *   credit is truncated as well.
  * - ReLU backpropagates grad_output where its retained summed input

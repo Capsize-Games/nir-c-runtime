@@ -102,10 +102,11 @@ int nir_op_li_into(
 );
 
 /* One leaky integrate-and-fire step: the LI zero-order-hold
- * integration above, then a strict-threshold hard reset --
+ * integration above, then the selected strict-threshold reset --
  *   spike = membrane > v_threshold ? 1.0 : 0.0
- *   stored = spike ? v_reset : membrane
- * matching apply_lif in ops_neuron.py. `v_prev` may be NULL on a
+ *   hard: stored = spike ? v_reset : membrane
+ *   subtractive: stored = membrane - v_threshold * spike
+ * `v_prev` may be NULL on a
  * node's first step (treated as zeros). The node's output value is
  * the spike train (`spike_out`); `stored_out` is the post-reset
  * membrane the caller retains as the next step's v_prev. There is no
@@ -303,27 +304,27 @@ int nir_op_scale_backward(
     float *grad_scale
 );
 
-/* Spiking-neuron backward convention (LIF/IF/CubaLIF). The forward
- * hard reset (stored = spike ? v_reset : membrane) carries ZERO
- * gradient: grad_stored is accepted for tape wiring but
- * contributes nothing, so no gradient flows through the reset
- * branch. The learning signal flows through the spike output with
- * a surrogate derivative, d(spike)/d(membrane) =
- * surr(membrane - v_threshold), mirroring snnTorch's
- * straight-through spike gradient (the same fast_sigmoid/atan
- * derivatives as nir_surrogate_grad). This truncates BPTT through
- * the stored membrane across steps: within one step, only the
- * spike path carries credit to the input and previous state. The
- * membrane feeding the surrogate is recomputed from the retained
- * input and previous state, so the tape retains those rather than
- * a pre-reset membrane the forward never outputs. */
+/* Spiking-neuron backward convention (LIF/IF/CubaLIF). For hard-reset
+ * LIF and the other spiking neurons, grad_stored contributes nothing.
+ * Subtractive-reset LIF differentiates stored = membrane -
+ * v_threshold * spike using the configured surrogate. With
+ * s = surr(membrane - v_threshold), its membrane gradient is
+ * grad_spike * s + grad_stored * (1 - v_threshold * s). The
+ * surrogate derivatives are the same fast_sigmoid/atan functions
+ * as nir_surrogate_grad. The membrane is recomputed from the
+ * retained input and previous state, rather than retained as a
+ * separate pre-reset value. */
 
-/* Backward through one LIF step: with decay = exp(-1 / tau) and
- * g = grad_spike * surr(membrane - v_threshold), grad_input = g *
- * r * (1 - decay) and grad_prev = g * decay. `v_prev` may be NULL
+/* Backward through one LIF step: with decay = exp(-1 / tau), the
+ * membrane gradient from the spike path is
+ * grad_spike * surr(membrane - v_threshold); subtractive reset
+ * adds grad_stored * (1 - v_threshold * surr(...)). Scale the
+ * combined membrane gradient by r * (1 - decay) for grad_input
+ * and decay for grad_prev. `v_prev` may be NULL
  * (treated as zeros, matching the forward); `grad_stored` may be
- * NULL (when non-NULL it must match the input shape and is
- * ignored per the reset convention above); `grad_prev` may be
+ * NULL (when non-NULL it must match the input shape; hard reset
+ * ignores it, subtractive reset uses its immediate-reset derivative);
+ * `grad_prev` may be
  * NULL when the previous-state gradient is unneeded. Outputs
  * follow the elementwise rule against grad_spike and the retained
  * tensors, and must not overlap each other. */

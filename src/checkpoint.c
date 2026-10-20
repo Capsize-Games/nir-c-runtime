@@ -1452,11 +1452,18 @@ static int export_pool2d(nir_json_writer_t *w, const nir_node_t *node) {
 
 static int export_lif(nir_json_writer_t *w, const nir_node_t *node) {
     const nir_lif_params_t *p = &node->params.lif;
+    if (p->reset_mode != NIR_LIF_RESET_HARD &&
+        p->reset_mode != NIR_LIF_RESET_SUBTRACTIVE) {
+        return 0;
+    }
     return write_scalar(w, "tau", p->tau) &&
         write_scalar(w, "r", p->r) &&
         write_scalar(w, "v_leak", p->v_leak) &&
         write_scalar(w, "v_threshold", p->v_threshold) &&
-        write_scalar(w, "v_reset", p->v_reset);
+        write_scalar(w, "v_reset", p->v_reset) &&
+        (p->reset_mode == NIR_LIF_RESET_HARD ||
+         (nir_json_key(w, "reset_mode") &&
+          nir_json_string(w, "subtractive")));
 }
 
 static int export_if(nir_json_writer_t *w, const nir_node_t *node) {

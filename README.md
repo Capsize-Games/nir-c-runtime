@@ -44,6 +44,13 @@ also checked by hand against a real trained 128×128, 2-channel, 11-class
 checkpoint (not committed here) with the same bit-exact result. Every test
 executable also passes clean under AddressSanitizer + UBSan.
 
+LIF graphs default to NIR's hard reset: a spike stores `v_reset`. The graph
+loader also accepts the explicit runtime extension `reset_mode: "subtractive"`,
+which stores `membrane - v_threshold` immediately after a spike. BPTT uses the
+surrogate derivative through both the spike and this subtractive reset; hard
+reset keeps its existing zero-gradient reset branch. Graph-summary export
+preserves the subtractive mode.
+
 **Known limitation:** convolution uses portable 4×4 output tiles but is not
 yet SIMD-vectorized. On the 128×128 real-model check above it took ~148ms for
 16 timesteps versus PyTorch's ~20ms on the same machine — expected for a
