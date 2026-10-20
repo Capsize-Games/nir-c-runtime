@@ -4,7 +4,7 @@
  * emits (see the reference interpreter this mirrors:
  * spikeforge/nir_bridge/{ops_neuron,ops_linear}.py) -- Input, Output,
  * Conv2d, Affine, Flatten, AvgPool2d, SumPool2d, LI, Threshold,
- * Scale, Delay. LIF/IF/CubaLIF/Conv1d/Linear are not implemented;
+ * Scale, Delay, LIF. IF/CubaLIF/Conv1d/Linear are not implemented;
  * loading a graph that uses them fails with a named error rather than
  * silently misinterpreting them.
  */
@@ -26,7 +26,8 @@ typedef enum {
     NIR_NODE_LI,
     NIR_NODE_THRESHOLD,
     NIR_NODE_SCALE,
-    NIR_NODE_DELAY
+    NIR_NODE_DELAY,
+    NIR_NODE_LIF
 } nir_node_kind_t;
 
 typedef struct {
@@ -50,6 +51,16 @@ typedef struct {
     float tau, r, v_leak;
 } nir_li_params_t;
 
+typedef enum {
+    NIR_LIF_RESET_HARD = 0,
+    NIR_LIF_RESET_SUBTRACTIVE = 1
+} nir_lif_reset_mode_t;
+
+typedef struct {
+    float tau, r, v_leak, v_threshold, v_reset;
+    nir_lif_reset_mode_t reset_mode;
+} nir_lif_params_t;
+
 typedef struct {
     float threshold;
 } nir_threshold_params_t;
@@ -66,6 +77,7 @@ typedef struct {
         nir_affine_params_t affine;
         nir_pool2d_params_t pool2d;
         nir_li_params_t li;
+        nir_lif_params_t lif;
         nir_threshold_params_t threshold;
         nir_scale_params_t scale;
     } params;

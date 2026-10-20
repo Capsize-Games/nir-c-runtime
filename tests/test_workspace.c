@@ -4,6 +4,7 @@
 #include "test_util.h"
 
 #include <stdint.h>
+#include <math.h>
 
 static void bind_vector(nir_tensor_t *tensor, float *data, size_t size) {
     size_t shape[1] = {size};
@@ -241,9 +242,96 @@ static void test_workspace_preserves_delay_and_li_state(void) {
     json_free(json);
 }
 
+static void test_workspace_lif_state_and_reset(void) {
+    const char *text =
+        "{\"nodes\":["
+        "{\"name\":\"input\",\"kind\":\"Input\",\"params\":{}},"
+        "{\"name\":\"lif\",\"kind\":\"LIF\",\"params\":{"
+        "\"tau\":1,\"r\":1,\"v_leak\":0,\"v_threshold\":0.8,"
+        "\"v_reset\":0,\"reset_mode\":\"subtractive\"}},"
+        "{\"name\":\"output\",\"kind\":\"Output\",\"params\":{}}],"
+        "\"edges\":[{\"source\":\"input\",\"target\":\"lif\"},"
+        "{\"source\":\"lif\",\"target\":\"output\"}]}";
+    char *error = NULL;
+    json_value_t *json = json_parse(text, &error);
+    CHECK(error == NULL);
+    nir_graph_t graph;
+    CHECK(nir_graph_load(json, &graph, &error));
+    nir_runtime_t runtime;
+    CHECK(nir_runtime_init(&runtime, &graph, &error));
+
+    size_t shape[1] = {1};
+    nir_tensor_t frames[2] = {
+        nir_tensor_alloc(shape, 1), nir_tensor_alloc(shape, 1)
+    };
+    frames[0].data[0] = 2.0f;
+    frames[1].data[0] = 1.0f;
+
+    float values_data[3] = {0};
+    float li_data[3] = {0};
+    float lif_data[3] = {0};
+    float delay_data[3] = {0};
+    float sum_data[1] = {0};
+    float total_data[1] = {0};
+    float actual_data[1] = {0};
+    nir_tensor_t values[3] = {0};
+    nir_tensor_t li_state[3] = {0};
+    nir_tensor_t lif_state[3] = {0};
+    nir_tensor_t delay_buffer[3] = {0};
+    for (size_t i = 0; i < 3; i++) {
+        bind_vector(&values[i], &values_data[i], 1);
+        bind_vector(&li_state[i], &li_data[i], 1);
+        bind_vector(&lif_state[i], &lif_data[i], 1);
+        bind_vector(&delay_buffer[i], &delay_data[i], 1);
+    }
+    nir_tensor_t sum = {0}, total = {0}, actual = {0};
+    bind_vector(&sum, sum_data, 1);
+    bind_vector(&total, total_data, 1);
+    bind_vector(&actual, actual_data, 1);
+    int li_primed[3] = {0}, lif_primed[3] = {0}, delay_primed[3] = {0};
+    nir_runtime_workspace_t workspace = {
+        .values = values, .li_state = li_state, .li_primed = li_primed,
+        .lif_state = lif_state, .lif_primed = lif_primed,
+        .delay_buffer = delay_buffer, .delay_primed = delay_primed,
+        .sum = &sum, .total = &total, .node_capacity = 3,
+    };
+    CHECK(nir_runtime_run_workspace(
+        &runtime, frames, 2, &workspace, &actual, &error
+    ));
+    CHECK_NEAR(actual.data[0], 1.0f, 1e-6);
+    CHECK(lif_primed[1] == 1);
+    CHECK_NEAR(lif_state[1].data[0],
+        (2.0 * (1.0 - exp(-1.0)) - 0.8) * exp(-1.0) +
+            (1.0 - exp(-1.0)) - 0.8,
+        1e-6);
+
+    nir_runtime_workspace_reset(&workspace);
+    CHECK(lif_primed[1] == 0);
+    CHECK(nir_runtime_run_workspace(
+        &runtime, frames, 2, &workspace, &actual, &error
+    ));
+    CHECK_NEAR(actual.data[0], 1.0f, 1e-6);
+
+    nir_tensor_free(&actual);
+    nir_tensor_free(&total);
+    nir_tensor_free(&sum);
+    for (size_t i = 0; i < 3; i++) {
+        nir_tensor_free(&delay_buffer[i]);
+        nir_tensor_free(&lif_state[i]);
+        nir_tensor_free(&li_state[i]);
+        nir_tensor_free(&values[i]);
+    }
+    nir_tensor_free(&frames[0]);
+    nir_tensor_free(&frames[1]);
+    nir_runtime_free(&runtime);
+    nir_graph_free(&graph);
+    json_free(json);
+}
+
 int main(void) {
     test_runtime_rejects_invalid_arguments_and_edges();
     test_workspace_matches_allocating_runtime();
     test_workspace_preserves_delay_and_li_state();
+    test_workspace_lif_state_and_reset();
     return 0;
 }

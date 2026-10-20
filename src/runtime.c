@@ -106,7 +106,7 @@ int nir_runtime_init(
     }
     for (size_t i = 0; i < graph->node_count; i++) {
         if (graph->nodes[i].kind < NIR_NODE_INPUT ||
-            graph->nodes[i].kind > NIR_NODE_DELAY) {
+            graph->nodes[i].kind > NIR_NODE_LIF) {
             set_error(error, "runtime graph contains an invalid node kind", NULL);
             return 0;
         }
@@ -124,11 +124,16 @@ int nir_runtime_init(
         n == 0 ? 1 : n, sizeof(nir_tensor_t)
     );
     rt->li_primed = (int *)calloc(n == 0 ? 1 : n, sizeof(int));
+    rt->lif_state = (nir_tensor_t *)calloc(
+        n == 0 ? 1 : n, sizeof(nir_tensor_t)
+    );
+    rt->lif_primed = (int *)calloc(n == 0 ? 1 : n, sizeof(int));
     rt->delay_buffer = (nir_tensor_t *)calloc(
         n == 0 ? 1 : n, sizeof(nir_tensor_t)
     );
     rt->delay_primed = (int *)calloc(n == 0 ? 1 : n, sizeof(int));
     if (rt->order == NULL || rt->li_state == NULL || rt->li_primed == NULL ||
+        rt->lif_state == NULL || rt->lif_primed == NULL ||
         rt->delay_buffer == NULL || rt->delay_primed == NULL) {
         nir_runtime_free(rt);
         set_error(error, "out of memory", NULL);
@@ -148,6 +153,7 @@ void nir_runtime_free(nir_runtime_t *rt) {
     if (rt->graph != NULL) {
         for (size_t i = 0; i < rt->graph->node_count; i++) {
             if (rt->li_state != NULL) nir_tensor_free(&rt->li_state[i]);
+            if (rt->lif_state != NULL) nir_tensor_free(&rt->lif_state[i]);
             if (rt->delay_buffer != NULL) {
                 nir_tensor_free(&rt->delay_buffer[i]);
             }
@@ -156,6 +162,8 @@ void nir_runtime_free(nir_runtime_t *rt) {
     free(rt->order);
     free(rt->li_state);
     free(rt->li_primed);
+    free(rt->lif_state);
+    free(rt->lif_primed);
     free(rt->delay_buffer);
     free(rt->delay_primed);
     memset(rt, 0, sizeof(*rt));
@@ -253,6 +261,22 @@ static nir_tensor_t apply_node(
             rt->li_primed[index] = 1;
             return membrane;
         }
+        case NIR_NODE_LIF: {
+            const nir_tensor_t *prev = rt->lif_primed[index] ?
+                &rt->lif_state[index] : NULL;
+            nir_lif_output_t result = nir_op_lif(
+                &node->params.lif, input, prev
+            );
+            if (result.spikes.data == NULL || result.state.data == NULL) {
+                nir_tensor_free(&result.spikes);
+                nir_tensor_free(&result.state);
+                return (nir_tensor_t){0};
+            }
+            nir_tensor_free(&rt->lif_state[index]);
+            rt->lif_state[index] = result.state;
+            rt->lif_primed[index] = 1;
+            return result.spikes;
+        }
         case NIR_NODE_THRESHOLD:
             return nir_op_threshold(&node->params.threshold, input);
         case NIR_NODE_SCALE:
@@ -326,9 +350,19 @@ static int workspace_ready(
     const nir_tensor_t *readout_out, char **error
 ) {
     size_t n = rt->graph->node_count;
+    int needs_lif_state = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (rt->graph->nodes[i].kind == NIR_NODE_LIF) {
+            needs_lif_state = 1;
+            break;
+        }
+    }
     if (workspace == NULL || workspace->node_capacity < n ||
         workspace->values == NULL || workspace->li_state == NULL ||
-        workspace->li_primed == NULL || workspace->delay_buffer == NULL ||
+        workspace->li_primed == NULL ||
+        (needs_lif_state && (workspace->lif_state == NULL ||
+                             workspace->lif_primed == NULL)) ||
+        workspace->delay_buffer == NULL ||
         workspace->delay_primed == NULL || workspace->sum == NULL ||
         workspace->total == NULL || readout_out == NULL ||
         workspace->sum->data == NULL || workspace->total->data == NULL ||
@@ -430,6 +464,17 @@ static int apply_node_workspace(
             }
             if (ok) {
                 workspace->li_primed[index] = 1;
+            }
+            break;
+        case NIR_NODE_LIF:
+            ok = nir_op_lif_into(
+                &node->params.lif, input,
+                workspace->lif_primed[index] ?
+                    &workspace->lif_state[index] : NULL,
+                output, &workspace->lif_state[index]
+            );
+            if (ok) {
+                workspace->lif_primed[index] = 1;
             }
             break;
         case NIR_NODE_THRESHOLD:
@@ -571,13 +616,20 @@ int nir_runtime_run(
 }
 
 void nir_runtime_workspace_reset(nir_runtime_workspace_t *workspace) {
-    if (workspace == NULL || workspace->li_primed == NULL ||
-        workspace->delay_primed == NULL) {
+    if (workspace == NULL || (workspace->li_primed == NULL &&
+        workspace->lif_primed == NULL && workspace->delay_primed == NULL)) {
         return;
     }
     for (size_t i = 0; i < workspace->node_capacity; i++) {
-        workspace->li_primed[i] = 0;
-        workspace->delay_primed[i] = 0;
+        if (workspace->li_primed != NULL) {
+            workspace->li_primed[i] = 0;
+        }
+        if (workspace->lif_primed != NULL) {
+            workspace->lif_primed[i] = 0;
+        }
+        if (workspace->delay_primed != NULL) {
+            workspace->delay_primed[i] = 0;
+        }
     }
 }
 

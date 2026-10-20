@@ -73,6 +73,83 @@ static void test_li_zero_order_hold(void) {
     nir_tensor_free(&first_step);
 }
 
+static void test_lif_spikes_and_hard_reset_trajectory(void) {
+    nir_lif_params_t params = {
+        1.0f, 1.0f, 0.0f, 0.8f, 0.25f, NIR_LIF_RESET_HARD
+    };
+    size_t shape[1] = {1};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    input.data[0] = 2.0f;
+    nir_lif_output_t step = nir_op_lif(&params, &input, NULL);
+    CHECK(step.spikes.data != NULL && step.state.data != NULL);
+    CHECK_NEAR(step.spikes.data[0], 1.0f, 1e-6);
+    CHECK_NEAR(step.state.data[0], 0.25f, 1e-6);
+
+    input.data[0] = 1.0f;
+    nir_lif_output_t next = nir_op_lif(&params, &input, &step.state);
+    CHECK(next.spikes.data != NULL && next.state.data != NULL);
+    CHECK_NEAR(next.spikes.data[0], 0.0f, 1e-6);
+    CHECK_NEAR(next.state.data[0], 0.25 * exp(-1.0) + (1.0 - exp(-1.0)),
+               1e-6);
+
+    params.reset_mode = NIR_LIF_RESET_SUBTRACTIVE;
+    input.data[0] = 2.0f;
+    nir_lif_output_t subtractive = nir_op_lif(&params, &input, NULL);
+    double membrane = 2.0 * (1.0 - exp(-1.0));
+    CHECK_NEAR(subtractive.spikes.data[0], 1.0f, 1e-6);
+    CHECK_NEAR(subtractive.state.data[0], membrane - 0.8, 1e-6);
+    input.data[0] = 1.0f;
+    nir_lif_output_t subtractive_next = nir_op_lif(
+        &params, &input, &subtractive.state
+    );
+    double next_membrane = (membrane - 0.8) * exp(-1.0) +
+        (1.0 - exp(-1.0));
+    CHECK_NEAR(subtractive_next.spikes.data[0], 1.0f, 1e-6);
+    CHECK_NEAR(subtractive_next.state.data[0], next_membrane - 0.8, 1e-6);
+
+    /* Equality is not a spike, matching Threshold's strict comparison. */
+    params.v_threshold = 1.0f;
+    input.data[0] = 1.0f / (1.0f - expf(-1.0f));
+    nir_lif_output_t equal = nir_op_lif(&params, &input, NULL);
+    CHECK_NEAR(equal.spikes.data[0], 0.0f, 1e-6);
+
+    nir_tensor_free(&input);
+    nir_tensor_free(&step.spikes);
+    nir_tensor_free(&step.state);
+    nir_tensor_free(&next.spikes);
+    nir_tensor_free(&next.state);
+    nir_tensor_free(&equal.spikes);
+    nir_tensor_free(&equal.state);
+    nir_tensor_free(&subtractive.spikes);
+    nir_tensor_free(&subtractive.state);
+    nir_tensor_free(&subtractive_next.spikes);
+    nir_tensor_free(&subtractive_next.state);
+}
+
+static void test_lif_rejects_invalid_parameters_and_shapes(void) {
+    size_t shape[1] = {2};
+    nir_tensor_t input = nir_tensor_alloc(shape, 1);
+    nir_tensor_t spikes = nir_tensor_alloc(shape, 1);
+    nir_tensor_t state = nir_tensor_alloc(shape, 1);
+    nir_lif_params_t params = {
+        1.0f, 1.0f, 0.0f, 1.0f, 0.0f, NIR_LIF_RESET_HARD
+    };
+    params.tau = 0.0f;
+    CHECK(!nir_op_lif_into(&params, &input, NULL, &spikes, &state));
+    params.tau = 1.0f;
+    params.reset_mode = (nir_lif_reset_mode_t)7;
+    CHECK(!nir_op_lif_into(&params, &input, NULL, &spikes, &state));
+    params.reset_mode = NIR_LIF_RESET_HARD;
+    size_t wrong_shape[1] = {1};
+    nir_tensor_t prev = nir_tensor_alloc(wrong_shape, 1);
+    CHECK(!nir_op_lif_into(&params, &input, &prev, &spikes, &state));
+
+    nir_tensor_free(&prev);
+    nir_tensor_free(&state);
+    nir_tensor_free(&spikes);
+    nir_tensor_free(&input);
+}
+
 static void test_conv2d_identity_kernel(void) {
     /* A single 1x1 identity-weight kernel over a 1-channel 2x2 image
      * must reproduce the input exactly. */
@@ -175,6 +252,8 @@ static void test_convenience_ops_accept_null_inputs_safely(void) {
     CHECK(out.data == NULL);
     out = nir_op_li(NULL, NULL, NULL);
     CHECK(out.data == NULL);
+    nir_lif_output_t lif = nir_op_lif(NULL, NULL, NULL);
+    CHECK(lif.spikes.data == NULL && lif.state.data == NULL);
     out = nir_op_threshold(NULL, NULL);
     CHECK(out.data == NULL);
     out = nir_op_scale(NULL, NULL);
@@ -235,6 +314,8 @@ int main(void) {
     test_threshold_is_strict();
     test_scale();
     test_li_zero_order_hold();
+    test_lif_spikes_and_hard_reset_trajectory();
+    test_lif_rejects_invalid_parameters_and_shapes();
     test_conv2d_identity_kernel();
     test_avgpool_and_sumpool_relationship();
     test_flatten_preserves_data_order();

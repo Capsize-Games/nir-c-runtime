@@ -69,6 +69,11 @@ static void test_malformed_graph_parameters_are_rejected(void) {
         "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Affine\",\"params\":{\"weight\":[[1,\"bad\"]],\"bias\":[0]}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LI\",\"params\":{\"tau\":\"slow\"}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LI\",\"params\":{\"tau\":0}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"tau\":0}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"v_threshold\":\"high\"}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"v_reset\":1e999}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"reset_mode\":\"unknown\"}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"reset_mode\":2}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"Threshold\",\"params\":{\"threshold\":1e999}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"Scale\",\"params\":{\"scale\":[]}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"Scale\",\"params\":{\"scale\":1}},{\"name\":\"n\",\"kind\":\"Scale\",\"params\":{}}],\"edges\":[]}",
@@ -92,10 +97,47 @@ static void test_malformed_graph_parameters_are_rejected(void) {
     }
 }
 
+static void test_lif_defaults_and_explicit_reset_mode(void) {
+    const char *text =
+        "{\"nodes\":["
+        "{\"name\":\"input\",\"kind\":\"Input\",\"params\":{}},"
+        "{\"name\":\"lif\",\"kind\":\"LIF\",\"params\":{}},"
+        "{\"name\":\"output\",\"kind\":\"Output\",\"params\":{}}],"
+        "\"edges\":[{\"source\":\"input\",\"target\":\"lif\"},"
+        "{\"source\":\"lif\",\"target\":\"output\"}]}";
+    char *error = NULL;
+    json_value_t *json = json_parse(text, &error);
+    CHECK(json != NULL && error == NULL);
+    nir_graph_t graph;
+    CHECK(nir_graph_load(json, &graph, &error));
+    const nir_lif_params_t *p = &graph.nodes[1].params.lif;
+    CHECK_NEAR(p->tau, 1.0f, 1e-9);
+    CHECK_NEAR(p->r, 1.0f, 1e-9);
+    CHECK_NEAR(p->v_leak, 0.0f, 1e-9);
+    CHECK_NEAR(p->v_threshold, 1.0f, 1e-9);
+    CHECK_NEAR(p->v_reset, 0.0f, 1e-9);
+    CHECK(p->reset_mode == NIR_LIF_RESET_HARD);
+    nir_graph_free(&graph);
+    json_free(json);
+
+    const char *subtract_text =
+        "{\"nodes\":[{\"name\":\"lif\",\"kind\":\"LIF\","
+        "\"params\":{\"reset_mode\":\"subtractive\"}}],"
+        "\"edges\":[]}";
+    json = json_parse(subtract_text, &error);
+    CHECK(json != NULL && error == NULL);
+    CHECK(nir_graph_load(json, &graph, &error));
+    CHECK(graph.nodes[0].params.lif.reset_mode ==
+          NIR_LIF_RESET_SUBTRACTIVE);
+    nir_graph_free(&graph);
+    json_free(json);
+}
+
 int main(void) {
     test_invalid_endpoints_are_rejected();
     test_unknown_string_endpoint_is_rejected();
     test_valid_edge_loads();
     test_malformed_graph_parameters_are_rejected();
+    test_lif_defaults_and_explicit_reset_mode();
     return 0;
 }

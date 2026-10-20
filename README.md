@@ -29,12 +29,23 @@ NIR-exported spikeforge model, not tied to one use case.
 ## Status
 
 Working MVP. Loads a `graph_summary()`-shaped NIR JSON export and runs
-inference for the exact node kinds spikeforge's `conv_net` topology emits:
+inference for the node kinds spikeforge's `conv_net` topology emits and the
+first-order `LIF` node:
 `Input`, `Conv2d`, `Affine`, `Flatten`, `AvgPool2d`, `SumPool2d`, `LI`,
-`Threshold`, `Scale`, `Delay`, `Output`. `LIF`/`IF`/`CubaLIF`/`Conv1d`/
+`LIF`, `Threshold`, `Scale`, `Delay`, `Output`. `IF`/`CubaLIF`/`Conv1d`/
 `Linear` are not implemented; loading a graph that uses them fails with a
-named "unsupported node kind" error rather than silently misinterpreting
-them.
+named "unsupported node kind" error rather than silently misinterpreting them.
+
+`LIF` advances its membrane with the same zero-order-hold equation as `LI`,
+using scalar `tau`, `r`, and `v_leak` parameters (defaults 1, 1, and 0):
+`a = v_leak + (v_prev - v_leak) * exp(-1/tau) + r * (1-exp(-1/tau)) * input`.
+It emits 1 only when `a > v_threshold` (default 1). NIR's default hard reset
+stores `v_reset` after a spike (default 0); otherwise it stores `a`. The
+runtime also accepts the explicit JSON extension `reset_mode: "subtractive"`
+to store `a - v_threshold` on a spike, matching an immediate subtractive
+reset. In this mode `v_reset` is unused. Omitting `reset_mode` keeps NIR hard
+reset behavior. Parameters are scalar; vector-valued neuron parameters are
+not supported.
 
 **Validated, not just "it runs":** `tests/test_conv_net.c` checks a small
 topology against spikeforge's own reference `NirInterpreter` output

@@ -306,6 +306,31 @@ static int load_li(const json_value_t *params, nir_node_t *node) {
         parameter_number(params, "v_leak", 0.0f, &node->params.li.v_leak);
 }
 
+static int load_lif(const json_value_t *params, nir_node_t *node) {
+    nir_lif_params_t *p = &node->params.lif;
+    const char *reset_mode = json_as_string(
+        json_object_get(params, "reset_mode")
+    );
+    p->reset_mode = NIR_LIF_RESET_HARD;
+    if (reset_mode != NULL) {
+        if (strcmp(reset_mode, "hard") == 0) {
+            p->reset_mode = NIR_LIF_RESET_HARD;
+        } else if (strcmp(reset_mode, "subtractive") == 0) {
+            p->reset_mode = NIR_LIF_RESET_SUBTRACTIVE;
+        } else {
+            return 0;
+        }
+    } else if (json_object_get(params, "reset_mode") != NULL) {
+        return 0;
+    }
+    return parameter_number(params, "tau", 1.0f, &p->tau) &&
+        p->tau > 0.0f &&
+        parameter_number(params, "r", 1.0f, &p->r) &&
+        parameter_number(params, "v_leak", 0.0f, &p->v_leak) &&
+        parameter_number(params, "v_threshold", 1.0f, &p->v_threshold) &&
+        parameter_number(params, "v_reset", 0.0f, &p->v_reset);
+}
+
 typedef struct {
     const char *name;
     nir_node_kind_t kind;
@@ -323,6 +348,7 @@ static const kind_entry_t KIND_TABLE[] = {
     {"Threshold", NIR_NODE_THRESHOLD},
     {"Scale", NIR_NODE_SCALE},
     {"Delay", NIR_NODE_DELAY},
+    {"LIF", NIR_NODE_LIF},
 };
 
 static int resolve_kind(const char *text, nir_node_kind_t *kind) {
@@ -370,6 +396,12 @@ static int load_node(
         case NIR_NODE_LI:
             if (!load_li(params, node)) {
                 set_error(error, "LI tau must be positive and parameters finite numbers", NULL);
+                return 0;
+            }
+            return 1;
+        case NIR_NODE_LIF:
+            if (!load_lif(params, node)) {
+                set_error(error, "LIF tau must be positive and parameters finite numbers", NULL);
                 return 0;
             }
             return 1;
