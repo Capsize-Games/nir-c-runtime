@@ -20,6 +20,8 @@ typedef struct {
     size_t *order; /* topological order, node indices, length node_count */
     nir_tensor_t *li_state;    /* previous membrane, valid for LI nodes */
     int *li_primed;
+    nir_tensor_t *lif_state;   /* reset membrane, valid for LIF nodes */
+    int *lif_primed;
     nir_tensor_t *delay_buffer; /* buffered value, valid for Delay nodes */
     int *delay_primed;
 } nir_runtime_t;
@@ -33,6 +35,8 @@ typedef struct {
     nir_tensor_t *values;
     nir_tensor_t *li_state;
     int *li_primed;
+    nir_tensor_t *lif_state;
+    int *lif_primed;
     nir_tensor_t *delay_buffer;
     int *delay_primed;
     nir_tensor_t *sum;

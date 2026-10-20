@@ -422,6 +422,63 @@ nir_tensor_t nir_op_li(
     return output;
 }
 
+int nir_op_lif_into(
+    const nir_lif_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev, nir_tensor_t *spikes, nir_tensor_t *state
+) {
+    if (params == NULL || !tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        params->tau <= 0.0f || !isfinite(params->tau) ||
+        !isfinite(params->r) || !isfinite(params->v_leak) ||
+        !isfinite(params->v_threshold) || !isfinite(params->v_reset) ||
+        (params->reset_mode != NIR_LIF_RESET_HARD &&
+         params->reset_mode != NIR_LIF_RESET_SUBTRACTIVE) ||
+        (v_prev != NULL && !tensor_valid(v_prev, input->ndim)) ||
+        (v_prev != NULL && !tensor_same_shape(v_prev, input)) ||
+        spikes == state) {
+        return 0;
+    }
+    if (!prepare_output(spikes, input->shape, input->ndim) ||
+        !prepare_output(state, input->shape, input->ndim) ||
+        tensors_overlap(spikes, state) || tensors_overlap(input, spikes) ||
+        tensors_overlap(input, state) ||
+        (v_prev != NULL && (tensors_overlap(v_prev, spikes) ||
+            tensors_partially_overlap(v_prev, state)))) {
+        return 0;
+    }
+    float decay = expf(-1.0f / params->tau);
+    for (size_t i = 0; i < input->size; i++) {
+        float prev = v_prev != NULL ? v_prev->data[i] : 0.0f;
+        float membrane = params->v_leak
+            + (prev - params->v_leak) * decay
+            + params->r * (1.0f - decay) * input->data[i];
+        int fired = membrane > params->v_threshold;
+        spikes->data[i] = fired ? 1.0f : 0.0f;
+        if (fired && params->reset_mode == NIR_LIF_RESET_HARD) {
+            state->data[i] = params->v_reset;
+        } else {
+            state->data[i] = fired ? membrane - params->v_threshold : membrane;
+        }
+    }
+    return 1;
+}
+
+nir_lif_output_t nir_op_lif(
+    const nir_lif_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev
+) {
+    nir_lif_output_t result = {{0}, {0}};
+    if (input == NULL) return result;
+    result.spikes = nir_tensor_alloc(input->shape, input->ndim);
+    result.state = nir_tensor_alloc(input->shape, input->ndim);
+    if (result.spikes.data == NULL || result.state.data == NULL ||
+        !nir_op_lif_into(
+            params, input, v_prev, &result.spikes, &result.state)) {
+        nir_tensor_free(&result.spikes);
+        nir_tensor_free(&result.state);
+    }
+    return result;
+}
+
 int nir_op_threshold_into(
     const nir_threshold_params_t *params, const nir_tensor_t *input,
     nir_tensor_t *output

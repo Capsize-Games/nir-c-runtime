@@ -30,10 +30,22 @@ NIR-exported spikeforge model, not tied to one use case.
 
 Working MVP. Loads a `graph_summary()`-shaped NIR JSON export and runs
 inference for `Input`, `Conv2d`, `Affine`, `Flatten`, `AvgPool2d`, `SumPool2d`,
-`LI`, `Threshold`, `Scale`, `Delay`, `ReLU`, and `Output`. `LIF`/`IF`/
+`LI`, `LIF`, `Threshold`, `Scale`, `Delay`, `ReLU`, and `Output`. `IF`/
 `CubaLIF`/`Conv1d`/`Linear` are not implemented; loading a graph that uses them
 fails with a named "unsupported node kind" error rather than silently
 misinterpreting them.
+
+`ReLU` computes `max(0, input)` elementwise. `LIF` advances its membrane
+with the same zero-order-hold equation as `LI`, using scalar `tau`, `r`,
+and `v_leak` parameters (defaults 1, 1, and 0):
+`a = v_leak + (v_prev - v_leak) * exp(-1/tau) + r * (1-exp(-1/tau)) * input`.
+It emits 1 only when `a > v_threshold` (default 1). The default hard reset
+stores `v_reset` after a spike (default 0), matching SpikeForge's local
+reference interpreter; otherwise it stores `a`. The runtime also accepts
+the explicit JSON extension `reset_mode: "subtractive"` to store
+`a - v_threshold` on a spike. In this mode `v_reset` is unused. Omitting
+`reset_mode` preserves hard reset behavior. Parameters are scalar;
+vector-valued neuron parameters are unsupported.
 
 **Validated, not just "it runs":** `tests/test_conv_net.c` checks a small
 topology against spikeforge's own reference `NirInterpreter` output

@@ -78,6 +78,23 @@ int nir_op_li_into(
     const nir_tensor_t *v_prev, nir_tensor_t *output
 );
 
+/* One zero-order-hold LIF step. The output is 1 only when membrane is
+ * strictly greater than v_threshold. Hard reset stores v_reset after a
+ * spike; subtractive reset stores membrane - v_threshold. An absent
+ * previous state is treated as zero. */
+typedef struct {
+    nir_tensor_t spikes;
+    nir_tensor_t state;
+} nir_lif_output_t;
+nir_lif_output_t nir_op_lif(
+    const nir_lif_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev
+);
+int nir_op_lif_into(
+    const nir_lif_params_t *params, const nir_tensor_t *input,
+    const nir_tensor_t *v_prev, nir_tensor_t *spikes, nir_tensor_t *state
+);
+
 /* Strict Heaviside: 1.0 where input > threshold, else 0.0. */
 nir_tensor_t nir_op_threshold(
     const nir_threshold_params_t *params, const nir_tensor_t *input
