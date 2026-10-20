@@ -29,12 +29,11 @@ NIR-exported spikeforge model, not tied to one use case.
 ## Status
 
 Working MVP. Loads a `graph_summary()`-shaped NIR JSON export and runs
-inference for the exact node kinds spikeforge's `conv_net` topology emits:
-`Input`, `Conv2d`, `Affine`, `Flatten`, `AvgPool2d`, `SumPool2d`, `LI`,
-`Threshold`, `Scale`, `Delay`, `Output`. `LIF`/`IF`/`CubaLIF`/`Conv1d`/
-`Linear` are not implemented; loading a graph that uses them fails with a
-named "unsupported node kind" error rather than silently misinterpreting
-them.
+inference for `Input`, `Conv2d`, `Affine`, `Flatten`, `AvgPool2d`, `SumPool2d`,
+`LI`, `Threshold`, `Scale`, `Delay`, `ReLU`, and `Output`. `LIF`/`IF`/
+`CubaLIF`/`Conv1d`/`Linear` are not implemented; loading a graph that uses them
+fails with a named "unsupported node kind" error rather than silently
+misinterpreting them.
 
 **Validated, not just "it runs":** `tests/test_conv_net.c` checks a small
 topology against spikeforge's own reference `NirInterpreter` output
@@ -54,7 +53,8 @@ target-specific kernels remain future optimization work.
 
 ## Scope
 
-- [x] Parse a NIR JSON graph export for the node kinds above.
+- [x] Parse a NIR JSON graph export for the node kinds above, including
+      parameterless elementwise ReLU.
 - [x] Load full-precision (float32) weights from the export.
 - [x] Run a fixed-timestep forward pass, validated against spikeforge's own
       reference NIR interpreter.

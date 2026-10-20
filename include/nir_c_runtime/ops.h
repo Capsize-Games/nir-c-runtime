@@ -96,4 +96,8 @@ int nir_op_scale_into(
     nir_tensor_t *output
 );
 
+/* Elementwise rectified linear unit: y = max(0, input). */
+nir_tensor_t nir_op_relu(const nir_tensor_t *input);
+int nir_op_relu_into(const nir_tensor_t *input, nir_tensor_t *output);
+
 #endif /* NIR_C_RUNTIME_OPS_H */

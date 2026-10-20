@@ -475,3 +475,27 @@ nir_tensor_t nir_op_scale(
     }
     return output;
 }
+
+int nir_op_relu_into(const nir_tensor_t *input, nir_tensor_t *output) {
+    if (!tensor_valid(input, input != NULL ? input->ndim : 0) ||
+        !prepare_output(output, input->shape, input->ndim) ||
+        tensors_partially_overlap(input, output)) {
+        return 0;
+    }
+    for (size_t i = 0; i < input->size; i++) {
+        if (input->data[i] < 0.0f) output->data[i] = 0.0f;
+        else output->data[i] = input->data[i];
+    }
+    return 1;
+}
+
+nir_tensor_t nir_op_relu(const nir_tensor_t *input) {
+    if (!tensor_valid(input, input != NULL ? input->ndim : 0)) {
+        return (nir_tensor_t){0};
+    }
+    nir_tensor_t output = nir_tensor_alloc(input->shape, input->ndim);
+    if (output.data != NULL && !nir_op_relu_into(input, &output)) {
+        nir_tensor_free(&output);
+    }
+    return output;
+}
