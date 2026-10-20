@@ -47,6 +47,14 @@ the explicit JSON extension `reset_mode: "subtractive"` to store
 `reset_mode` preserves hard reset behavior. Parameters are scalar;
 vector-valued neuron parameters are unsupported.
 
+LIF graphs using the workspace API must supply `lif_state` and `lif_primed`
+arrays alongside the existing workspace buffers. `values` holds emitted
+spikes; `lif_state` holds post-reset membranes. State persists across calls.
+Call `nir_runtime_workspace_reset` before each independent input history.
+The new fields are appended to the public runtime/workspace structures;
+recompile consumers against these headers. Non-LIF workspaces can leave
+the LIF fields zero-initialized.
+
 **Validated, not just "it runs":** `tests/test_conv_net.c` checks a small
 topology against spikeforge's own reference `NirInterpreter` output
 (`tools/export_fixture.py` produces both from one run). It was also checked
