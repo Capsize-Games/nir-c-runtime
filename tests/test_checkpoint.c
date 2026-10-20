@@ -750,6 +750,9 @@ int main(void) {
 
     char *error = NULL;
     nir_graph_t graph = load_fixture("fixtures/lif_linear_graph.json");
+    size_t lif1 = nir_graph_find(&graph, "lif1");
+    CHECK(lif1 != SIZE_MAX && graph.nodes[lif1].kind == NIR_NODE_LIF);
+    graph.nodes[lif1].params.lif.reset_mode = NIR_LIF_RESET_SUBTRACTIVE;
 
     /* Weight accessors: get, set, and every mismatch shape. */
     const float *w = NULL;
@@ -814,6 +817,9 @@ int main(void) {
     memset(&back, 0, sizeof(back));
     CHECK(nir_checkpoint_loads(dump, &graph, &back, &error));
     CHECK(error == NULL);
+    lif1 = nir_graph_find(&graph, "lif1");
+    CHECK(graph.nodes[lif1].params.lif.reset_mode ==
+          NIR_LIF_RESET_SUBTRACTIVE);
     CHECK(back.topology != NULL && strcmp(back.topology, "lif_linear") == 0);
     CHECK(back.seed == 42 && back.step == 100);
     nir_checkpoint_meta_free(&back);
@@ -881,12 +887,16 @@ int main(void) {
     char *summary = nir_graph_export_summary(&graph, &error);
     CHECK(error == NULL);
     CHECK(summary != NULL);
+    CHECK(strstr(summary, "\"reset_mode\":\"subtractive\"") != NULL);
     json_value_t *summary_json = json_parse(summary, &error);
     CHECK(error == NULL);
     nir_graph_t again;
     memset(&again, 0, sizeof(again));
     CHECK(nir_graph_load(summary_json, &again, &error));
     CHECK(error == NULL);
+    size_t again_lif1 = nir_graph_find(&again, "lif1");
+    CHECK(again.nodes[again_lif1].params.lif.reset_mode ==
+          NIR_LIF_RESET_SUBTRACTIVE);
     check_weights_equal(&graph, &again);
     nir_tensor_t after = run_readout(&again);
     CHECK(before.size == after.size);

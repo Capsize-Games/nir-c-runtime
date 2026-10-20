@@ -79,6 +79,9 @@ static void test_malformed_graph_parameters_are_rejected(void) {
         "{\"nodes\":[{\"name\":\"f\",\"kind\":\"Affine\",\"params\":{\"weight\":{\"data\":[[1.5]],\"dtype\":\"uint8\",\"scale\":1,\"zero_point\":0},\"bias\":[0]}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"tau\":0}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"tau\":\"slow\"}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"reset_mode\":\"other\"}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"reset_mode\":null}}],\"edges\":[]}",
+        "{\"nodes\":[{\"name\":\"n\",\"kind\":\"LIF\",\"params\":{\"reset_mode\":1}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"IF\",\"params\":{\"r\":[]}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"CubaLIF\",\"params\":{\"tau_syn\":0,\"tau_mem\":1}}],\"edges\":[]}",
         "{\"nodes\":[{\"name\":\"n\",\"kind\":\"CubaLIF\",\"params\":{\"tau_mem\":-1}}],\"edges\":[]}",
@@ -138,12 +141,31 @@ static void test_new_kinds_load_with_defaults(void) {
     CHECK(nir_graph_load(json, &graph, &error));
     CHECK(error == NULL && graph.node_count == 7);
     CHECK(graph.nodes[1].kind == NIR_NODE_LIF);
+    CHECK(graph.nodes[1].params.lif.reset_mode == NIR_LIF_RESET_HARD);
     CHECK(graph.nodes[2].kind == NIR_NODE_IF);
     CHECK(graph.nodes[3].kind == NIR_NODE_CUBALIF);
     CHECK(graph.nodes[4].kind == NIR_NODE_LINEAR);
     CHECK(graph.nodes[5].kind == NIR_NODE_CONV1D);
     CHECK(graph.nodes[5].params.conv1d.bias == NULL);
     CHECK(graph.input_index == 0 && graph.output_index == 6);
+    nir_graph_free(&graph);
+    json_free(json);
+}
+
+static void test_lif_subtractive_reset_loads(void) {
+    const char *text =
+        "{\"nodes\":[{\"name\":\"input\",\"kind\":\"Input\"},"
+        "{\"name\":\"lif\",\"kind\":\"LIF\",\"params\":{"
+        "\"reset_mode\":\"subtractive\"}},"
+        "{\"name\":\"output\",\"kind\":\"Output\"}],"
+        "\"edges\":[]}";
+    char *error = NULL;
+    json_value_t *json = json_parse(text, &error);
+    CHECK(json != NULL && error == NULL);
+    nir_graph_t graph;
+    CHECK(nir_graph_load(json, &graph, &error));
+    CHECK(graph.nodes[1].params.lif.reset_mode ==
+          NIR_LIF_RESET_SUBTRACTIVE);
     nir_graph_free(&graph);
     json_free(json);
 }
@@ -238,6 +260,7 @@ int main(void) {
     test_malformed_graph_parameters_are_rejected();
     test_unsupported_kind_names_kind();
     test_new_kinds_load_with_defaults();
+    test_lif_subtractive_reset_loads();
     test_conv2d_groups();
     test_input_output_endpoints_are_required();
     return 0;

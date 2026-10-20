@@ -459,6 +459,21 @@ static int load_li(const json_value_t *params, nir_node_t *node) {
 
 static int load_lif(const json_value_t *params, nir_node_t *node) {
     nir_lif_params_t *p = &node->params.lif;
+    const json_value_t *reset_json = json_object_get(params, "reset_mode");
+    const char *reset_mode = json_as_string(reset_json);
+    p->reset_mode = NIR_LIF_RESET_HARD;
+    if (reset_json != NULL) {
+        if (reset_mode == NULL) {
+            return 0;
+        }
+        if (strcmp(reset_mode, "hard") == 0) {
+            p->reset_mode = NIR_LIF_RESET_HARD;
+        } else if (strcmp(reset_mode, "subtractive") == 0) {
+            p->reset_mode = NIR_LIF_RESET_SUBTRACTIVE;
+        } else {
+            return 0;
+        }
+    }
     return parameter_number(params, "tau", 1.0f, &p->tau) &&
         p->tau > 0.0f &&
         parameter_number(params, "r", 1.0f, &p->r) &&
